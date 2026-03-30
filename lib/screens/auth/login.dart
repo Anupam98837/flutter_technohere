@@ -5,10 +5,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:technohere/config/app_config.dart';
+import 'package:technohere/config/appConfig.dart';
 import 'package:technohere/theme/app_colors.dart';
+import 'package:technohere/screens/structure.dart';
 import 'register.dart';
-import 'package:technohere/screens/pages/common/dashboard.dart';
 
 class LoginPage extends StatefulWidget {
   final VoidCallback? onOpenRegister;
@@ -130,84 +130,15 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _storeAuthIfNeeded({
-    required String token,
-    required String role,
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
+  required String token,
+  required String role,
+}) async {
+  final prefs = await SharedPreferences.getInstance();
 
-    if (_keepLoggedIn) {
-      await prefs.setString('token', token);
-      await prefs.setString('role', role);
-      await prefs.setBool('keep_logged_in', true);
-    } else {
-      await prefs.remove('token');
-      await prefs.remove('role');
-      await prefs.setBool('keep_logged_in', false);
-    }
-  }
-
-  Future<void> _showDashboardComingSoonDialog() async {
-    if (!mounted) return;
-
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (context) {
-        final textSecondary = AppColors.textSecondary(context);
-        final surface = AppColors.surface(context);
-        final border = AppColors.borderStrong(context);
-
-        return AlertDialog(
-          backgroundColor: surface,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: BorderSide(color: border),
-          ),
-          titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
-          contentPadding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-          actionsPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          title: const Row(
-            children: [
-              FaIcon(
-                FontAwesomeIcons.circleCheck,
-                color: AppColors.success,
-                size: 20,
-              ),
-              SizedBox(width: 10),
-              Text(
-                'Login Successful',
-                style: TextStyle(
-                  fontWeight: FontWeight.w800,
-                  fontSize: 18,
-                ),
-              ),
-            ],
-          ),
-          content: Text(
-            'Dashboard coming soon.',
-            style: TextStyle(
-              color: textSecondary,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              height: 1.45,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text(
-                'OK',
-                style: TextStyle(
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
+  await prefs.setString('token', token);
+  await prefs.setString('role', role);
+  await prefs.setBool('keep_logged_in', _keepLoggedIn);
+}
 
   Future<void> _submitLogin() async {
     FocusScope.of(context).unfocus();
@@ -272,20 +203,18 @@ class _LoginPageState extends State<LoginPage> {
         role: role.isEmpty ? 'student' : role,
       );
 
-    _setNotice('Login successful.', NoticeType.success);
+      _setNotice('Login successful.', NoticeType.success);
 
-    await Future.delayed(const Duration(milliseconds: 350));
-    if (!mounted) return;
+      await Future.delayed(const Duration(milliseconds: 350));
+      if (!mounted) return;
 
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => DashboardPage(
-          userName: (userMap['name'] ?? 'User').toString(),
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => StructurePage(
+            // userName: (userMap['name'] ?? 'User').toString(),
+          ),
         ),
-      ),
-    );
-
-      await _showDashboardComingSoonDialog();
+      );
     } on TimeoutException {
       _setNotice('Request timed out while logging in.', NoticeType.error);
     } catch (_) {
@@ -846,6 +775,7 @@ class _LoginPageState extends State<LoginPage> {
       ),
     );
   }
+
   void _openRegisterPage() {
     Navigator.of(context).push(
       MaterialPageRoute(

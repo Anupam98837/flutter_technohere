@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:technohere/config/app_config.dart';
+import 'package:technohere/config/appConfig.dart';
 import 'package:technohere/theme/app_colors.dart';
 
 import 'login.dart';
