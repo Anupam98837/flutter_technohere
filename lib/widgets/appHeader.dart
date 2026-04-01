@@ -14,7 +14,7 @@ class AppHeader extends StatefulWidget implements PreferredSizeWidget {
   State<AppHeader> createState() => _AppHeaderState();
 
   @override
-  Size get preferredSize => const Size.fromHeight(kToolbarHeight);
+  Size get preferredSize => const Size.fromHeight(64);
 }
 
 class _AppHeaderState extends State<AppHeader> {
@@ -130,47 +130,91 @@ class _AppHeaderState extends State<AppHeader> {
     }
   }
 
+  Widget _buildLogo() {
+    return Container(
+      width: 42,
+      height: 42,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: Colors.white.withOpacity(0.85),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.12),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.all(5),
+        child: ClipOval(
+          child: Image.asset(
+            'assets/icons/app_icon.png',
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => const Icon(
+              Icons.school_rounded,
+              color: Color(0xFF9E363A),
+              size: 22,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLogoutButton(BuildContext context) {
+    return Material(
+      color: Colors.white.withOpacity(0.16),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _isLoggingOut ? null : () => _confirmLogout(context),
+        child: const SizedBox(
+          width: 42,
+          height: 42,
+          child: Icon(
+            Icons.logout_rounded,
+            color: Colors.white,
+            size: 22,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
         AppBar(
+          toolbarHeight: 64,
           backgroundColor: const Color(0xFF9E363A),
           foregroundColor: Colors.white,
           elevation: 0,
           automaticallyImplyLeading: false,
-          centerTitle: false,
+          centerTitle: true,
           titleSpacing: 0,
+          title: const SizedBox.shrink(),
           leadingWidth: 64,
           leading: Padding(
-            padding: const EdgeInsets.only(left: 12, top: 8, bottom: 8),
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white24,
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Padding(
-                padding: const EdgeInsets.all(1.5),
-                child: Image.asset(
-                  'assets/icons/app_icon.png',
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => const Icon(
-                    Icons.school,
-                    color: Colors.white,
-                    size: 22,
-                  ),
-                ),
-              ),
+            padding: const EdgeInsets.only(left: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _buildLogo(),
             ),
           ),
           actions: [
-            IconButton(
-              tooltip: 'Logout',
-              onPressed: _isLoggingOut ? null : () => _confirmLogout(context),
-              icon: const Icon(Icons.logout_rounded),
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: _buildLogoutButton(context),
+              ),
             ),
           ],
         ),

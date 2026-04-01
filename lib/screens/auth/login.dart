@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:technohere/config/appConfig.dart';
 import 'package:technohere/theme/app_colors.dart';
 import 'package:technohere/screens/structure.dart';
+import 'forgetpassword.dart';
 import 'register.dart';
 
 class LoginPage extends StatefulWidget {
@@ -130,15 +131,15 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _storeAuthIfNeeded({
-  required String token,
-  required String role,
-}) async {
-  final prefs = await SharedPreferences.getInstance();
+    required String token,
+    required String role,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
 
-  await prefs.setString('token', token);
-  await prefs.setString('role', role);
-  await prefs.setBool('keep_logged_in', _keepLoggedIn);
-}
+    await prefs.setString('token', token);
+    await prefs.setString('role', role);
+    await prefs.setBool('keep_logged_in', _keepLoggedIn);
+  }
 
   Future<void> _submitLogin() async {
     FocusScope.of(context).unfocus();
@@ -522,12 +523,7 @@ class _LoginPageState extends State<LoginPage> {
                                     alignment: Alignment.centerRight,
                                     child: TextButton(
                                       onPressed: widget.onForgotPassword ??
-                                          () {
-                                            _setNotice(
-                                              'Forgot password screen coming soon.',
-                                              NoticeType.warning,
-                                            );
-                                          },
+                                          _openForgotPasswordPage,
                                       style: TextButton.styleFrom(
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 4,
@@ -592,7 +588,8 @@ class _LoginPageState extends State<LoginPage> {
                                           ),
                                         ),
                                         GestureDetector(
-                                          onTap: widget.onOpenRegister ?? _openRegisterPage,
+                                          onTap: widget.onOpenRegister ??
+                                              _openRegisterPage,
                                           child: const Text(
                                             'Register',
                                             style: TextStyle(
@@ -647,7 +644,7 @@ class _LoginPageState extends State<LoginPage> {
             ),
             child: ClipOval(
               child: Image.asset(
-                'assets/icons/app_icon.png',
+                'assets/icons/logo.png',
                 fit: BoxFit.contain,
               ),
             ),
@@ -771,6 +768,16 @@ class _LoginPageState extends State<LoginPage> {
           maxWidth: 40,
           minHeight: 40,
           maxHeight: 40,
+        ),
+      ),
+    );
+  }
+
+  void _openForgotPasswordPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ForgotPasswordPage(
+          initialIdentifier: _identifierController.text.trim(),
         ),
       ),
     );

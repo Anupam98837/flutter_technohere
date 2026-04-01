@@ -1175,17 +1175,18 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
   }
 
   void _finishAndExit() {
-    if (_isDisposed || !mounted) return;
+  if (_isDisposed || !mounted) return;
 
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(
-      builder: (_) => StructurePage(
-            // userName: (userMap['name'] ?? 'User').toString(),
-          ),
-      ),
-      (route) => false,
-    );
-  }
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!mounted || _isDisposed) return;
+
+    if (widget.onExamFinished != null) {
+      widget.onExamFinished!();
+    } else {
+      Navigator.of(context).maybePop(true);
+    }
+  });
+}
 
   void _goBack() {
     if (_isDisposed) return;

@@ -2,16 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:technohere/screens/pages/common/dashboard.dart';
 import 'package:technohere/screens/pages/doubts/doubt.dart';
 import 'package:technohere/screens/pages/exam/myExam.dart';
+import 'package:technohere/screens/pages/result/myResult.dart';
 import 'package:technohere/screens/pages/common/profile.dart';
 import 'package:technohere/widgets/appBottomNavbar.dart';
 import 'package:technohere/widgets/appHeader.dart';
 
 class StructurePage extends StatefulWidget {
   final String? userName;
+  final int initialIndex;
 
   const StructurePage({
     super.key,
     this.userName,
+    this.initialIndex = 0,
   });
 
   @override
@@ -19,7 +22,13 @@ class StructurePage extends StatefulWidget {
 }
 
 class _StructurePageState extends State<StructurePage> {
-  int _currentIndex = 0;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex.clamp(0, 4);
+  }
 
   String get _safeUserName {
     final name = widget.userName?.trim();
@@ -49,10 +58,7 @@ class _StructurePageState extends State<StructurePage> {
         );
 
       case 2:
-        return AppModulePlaceholder(
-          title: 'Results',
-          subtitle: 'Your results module will appear here.',
-          icon: Icons.bar_chart_rounded,
+        return MyResultPage(
           isDark: isDark,
         );
 

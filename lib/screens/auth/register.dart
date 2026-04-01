@@ -1069,7 +1069,7 @@ class _RegisterPageState extends State<RegisterPage> {
             ),
             child: ClipOval(
               child: Image.asset(
-                'assets/icons/app_icon.png',
+                'assets/icons/logo.png',
                 fit: BoxFit.contain,
               ),
             ),

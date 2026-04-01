@@ -8,12 +8,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:technohere/config/appConfig.dart';
 
 class DashboardModule extends StatefulWidget {
-  final String userName;
+  final String? userName;
   final bool isDark;
 
   const DashboardModule({
     super.key,
-    required this.userName,
+    this.userName,
     required this.isDark,
   });
 
@@ -71,7 +71,17 @@ class _DashboardModuleState extends State<DashboardModule> {
 
   Future<String> _getStoredToken() async {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString('token') ?? '').trim();
+    return (prefs.getString('student_token') ??
+            prefs.getString('token') ??
+            '')
+        .trim();
+  }
+
+  String _getGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good Morning';
+    if (hour < 17) return 'Good Afternoon';
+    return 'Good Evening';
   }
 
   Future<void> _loadDashboard({bool refreshing = false}) async {
@@ -498,11 +508,11 @@ class _DashboardModuleState extends State<DashboardModule> {
                             ],
                           ),
                           const SizedBox(height: 20),
-                          const Text(
-                            'Dashboard',
-                            style: TextStyle(
+                          Text(
+                            '${_getGreeting()},',
+                            style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 30,
+                              fontSize: 24,
                               fontWeight: FontWeight.w800,
                               height: 1.05,
                               letterSpacing: 0.2,
@@ -1411,7 +1421,10 @@ class _LineChartPainter extends CustomPainter {
 
     final fillPath = Path.from(visiblePath);
     fillPath.lineTo(
-      offsets[lastFullSegment < offsets.length ? lastFullSegment : offsets.length - 1].dx,
+      offsets[lastFullSegment < offsets.length
+          ? lastFullSegment
+          : offsets.length - 1]
+          .dx,
       size.height - bottomPad,
     );
     fillPath.lineTo(offsets.first.dx, size.height - bottomPad);
@@ -1450,7 +1463,7 @@ class _LineChartPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     final visiblePointCount =
-        math.max(1, ((points.length) * progress).ceil()).clamp(1, points.length);
+        math.max(1, (points.length * progress).ceil()).clamp(1, points.length);
 
     for (int i = 0; i < visiblePointCount; i++) {
       canvas.drawCircle(offsets[i], 4.5, pointBorderPaint);

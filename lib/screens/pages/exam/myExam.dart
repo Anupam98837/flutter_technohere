@@ -34,20 +34,6 @@ class _MyExamPageState extends State<MyExamPage> {
   static const Color _darkMuted = Color(0xFF9A9EAD);
   static const Color _darkLine = Color(0xFF2C2C33);
 
-  static const Color _pastelBlue = Color(0xFFE3F2FD);
-  static const Color _pastelGreen = Color(0xFFE8F5E9);
-  static const Color _pastelOrange = Color(0xFFFFF3E0);
-  static const Color _pastelPurple = Color(0xFFF3E5F5);
-  static const Color _pastelPink = Color(0xFFFCE4EC);
-  static const Color _pastelTeal = Color(0xFFE0F2F1);
-
-  static const Color _darkPastelBlue = Color(0xFF1E2A3A);
-  static const Color _darkPastelGreen = Color(0xFF1E3A2A);
-  static const Color _darkPastelOrange = Color(0xFF3A2A1A);
-  static const Color _darkPastelPurple = Color(0xFF2A1F3A);
-  static const Color _darkPastelPink = Color(0xFF3A1A2A);
-  static const Color _darkPastelTeal = Color(0xFF1A3A3A);
-
   final TextEditingController _searchController = TextEditingController();
 
   bool _isLoading = true;
@@ -55,6 +41,7 @@ class _MyExamPageState extends State<MyExamPage> {
   String? _error;
   List<MyExamItem> _items = [];
   String _query = '';
+  int _selectedTab = 0; // 0 = Exams, 1 = Finished
 
   @override
   void initState() {
@@ -455,12 +442,34 @@ class _MyExamPageState extends State<MyExamPage> {
     );
   }
 
+  bool _isFinishedItem(MyExamItem item) {
+    final myStatus = item.myStatus.toLowerCase();
+    final meta = _buildActionMeta(item);
+    return myStatus == 'completed' || meta.label == 'Finished';
+  }
+
   List<MyExamItem> get _filteredItems {
     if (_query.isEmpty) return _items;
 
     return _items.where((item) {
       return item.title.toLowerCase().contains(_query);
     }).toList();
+  }
+
+  List<MyExamItem> get _allExamItems {
+    return _items.where((item) => !_isFinishedItem(item)).toList();
+  }
+
+  List<MyExamItem> get _allFinishedItems {
+    return _items.where((item) => _isFinishedItem(item)).toList();
+  }
+
+  List<MyExamItem> get _filteredExamItems {
+    return _filteredItems.where((item) => !_isFinishedItem(item)).toList();
+  }
+
+  List<MyExamItem> get _filteredFinishedItems {
+    return _filteredItems.where((item) => _isFinishedItem(item)).toList();
   }
 
   void _showSnack(String message) {
@@ -475,21 +484,30 @@ class _MyExamPageState extends State<MyExamPage> {
       );
   }
 
-Future<void> _openExamPage(MyExamItem item) async {
-  if (!mounted) return;
+  Future<void> _openExamPage(MyExamItem item) async {
+    if (!mounted) return;
 
-  await Navigator.of(context).push(
-    MaterialPageRoute(
-      builder: (_) => ExamPage(
-        quizKey: item.uuid.trim(),
-        isDark: widget.isDark,
+    final result = await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ExamPage(
+          quizKey: item.uuid.trim(),
+          isDark: widget.isDark,
+          onExamFinished: () {
+            if (!mounted) return;
+            Navigator.of(context).pop(true);
+          },
+        ),
       ),
-    ),
-  );
+    );
 
-  if (!mounted) return;
-  await _loadItems(refreshing: true);
-}
+    if (!mounted) return;
+
+    if (result == true) {
+      await _loadItems(refreshing: true);
+    } else {
+      await _loadItems(refreshing: true);
+    }
+  }
 
   Future<void> _showInstructions(MyExamItem item) async {
     final text = _plainInstructions(item.instructions);
@@ -631,10 +649,123 @@ Future<void> _openExamPage(MyExamItem item) async {
     await _openExamPage(item);
   }
 
+  Widget _buildSegmentTabs(bool isDark) {
+    final bg = isDark
+        ? Colors.white.withOpacity(0.05)
+        : const Color(0xFFF7ECEE);
+
+    final activeBg = isDark
+        ? Colors.white.withOpacity(0.12)
+        : Colors.white;
+
+    final textPrimary = isDark ? Colors.white : _deep;
+    final textSecondary = isDark ? _darkMuted : _muted;
+
+    Widget tabButton({
+      required int index,
+      required String title,
+      required int count,
+    }) {
+      final selected = _selectedTab == index;
+
+      return Expanded(
+        child: GestureDetector(
+          onTap: () {
+            if (!mounted) return;
+            setState(() {
+              _selectedTab = index;
+            });
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+            decoration: BoxDecoration(
+              color: selected ? activeBg : Colors.transparent,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: _primary.withOpacity(isDark ? 0.18 : 0.08),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Flexible(
+                  child: Text(
+                    title,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: selected ? textPrimary : textSecondary,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? _primary.withOpacity(0.12)
+                        : (isDark
+                            ? Colors.white.withOpacity(0.08)
+                            : const Color(0xFFF3E6E8)),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '$count',
+                    style: const TextStyle(
+                      color: _primary,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isDark ? Colors.white.withOpacity(0.06) : _line,
+        ),
+      ),
+      child: Row(
+        children: [
+          tabButton(
+            index: 0,
+            title: 'Exams',
+            count: _allExamItems.length,
+          ),
+          const SizedBox(width: 6),
+          tabButton(
+            index: 1,
+            title: 'Finished',
+            count: _allFinishedItems.length,
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = widget.isDark;
-    final items = _filteredItems;
+    final items = _selectedTab == 0 ? _filteredExamItems : _filteredFinishedItems;
 
     final bgColor = isDark ? _darkBg : _bg;
     final cardColor = isDark ? _darkCard : Colors.white;
@@ -656,7 +787,7 @@ Future<void> _openExamPage(MyExamItem item) async {
             SliverToBoxAdapter(
               child: Container(
                 width: double.infinity,
-                height: 190,
+                height: 245,
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
                     colors: [
@@ -712,7 +843,7 @@ Future<void> _openExamPage(MyExamItem item) async {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const SizedBox(height: 20),
+                          const SizedBox(height: 10),
                           const Text(
                             'My Exams',
                             textAlign: TextAlign.center,
@@ -725,7 +856,7 @@ Future<void> _openExamPage(MyExamItem item) async {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            'Search and start your exams easily',
+                            'Search and manage your exams easily',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: Colors.white.withOpacity(0.92),
@@ -733,7 +864,7 @@ Future<void> _openExamPage(MyExamItem item) async {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 20),
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 20),
                             child: Container(
@@ -777,6 +908,11 @@ Future<void> _openExamPage(MyExamItem item) async {
                                           fontSize: 13,
                                         ),
                                         border: InputBorder.none,
+                                        enabledBorder: InputBorder.none,
+                                        focusedBorder: InputBorder.none,
+                                        disabledBorder: InputBorder.none,
+                                        errorBorder: InputBorder.none,
+                                        focusedErrorBorder: InputBorder.none,
                                         isDense: true,
                                         contentPadding:
                                             const EdgeInsets.symmetric(
@@ -810,6 +946,11 @@ Future<void> _openExamPage(MyExamItem item) async {
                                 ],
                               ),
                             ),
+                          ),
+                          const SizedBox(height: 14),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 20),
+                            child: _buildSegmentTabs(isDark),
                           ),
                         ],
                       ),
@@ -899,7 +1040,9 @@ Future<void> _openExamPage(MyExamItem item) async {
                           ),
                           const SizedBox(height: 14),
                           Text(
-                            'No exams found',
+                            _selectedTab == 0
+                                ? 'No exams found'
+                                : 'No finished exams',
                             style: TextStyle(
                               color: textPrimary,
                               fontWeight: FontWeight.w800,
@@ -909,7 +1052,9 @@ Future<void> _openExamPage(MyExamItem item) async {
                           const SizedBox(height: 6),
                           Text(
                             _query.isEmpty
-                                ? 'No quizzes or games are available right now.'
+                                ? (_selectedTab == 0
+                                    ? 'No active or pending exams are available right now.'
+                                    : 'No completed or finished exams are available right now.')
                                 : 'Try a different search term.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
@@ -1462,42 +1607,6 @@ class _ExamCard extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _TinyInfoChip extends StatelessWidget {
-  final String label;
-  final Color bg;
-  final Color color;
-  final bool isDark;
-
-  const _TinyInfoChip({
-    required this.label,
-    required this.bg,
-    required this.color,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 7,
-      ),
-      decoration: BoxDecoration(
-        color: isDark ? bg.withOpacity(0.3) : bg,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11.5,
-          fontWeight: FontWeight.w700,
-        ),
       ),
     );
   }
