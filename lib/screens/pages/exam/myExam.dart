@@ -11,11 +11,7 @@ class MyExamPage extends StatefulWidget {
   final void Function(MyExamItem item)? onStartExam;
   final bool isDark;
 
-  const MyExamPage({
-    super.key,
-    this.onStartExam,
-    required this.isDark,
-  });
+  const MyExamPage({super.key, this.onStartExam, required this.isDark});
 
   @override
   State<MyExamPage> createState() => _MyExamPageState();
@@ -38,6 +34,7 @@ class _MyExamPageState extends State<MyExamPage> {
 
   bool _isLoading = true;
   bool _isRefreshing = false;
+  bool _continueDialogVisible = false;
   String? _error;
   List<MyExamItem> _items = [];
   String _query = '';
@@ -66,9 +63,7 @@ class _MyExamPageState extends State<MyExamPage> {
 
   Future<String> _getToken() async {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString('student_token') ??
-            prefs.getString('token') ??
-            '')
+    return (prefs.getString('student_token') ?? prefs.getString('token') ?? '')
         .trim();
   }
 
@@ -98,9 +93,7 @@ class _MyExamPageState extends State<MyExamPage> {
 
       return {
         'statusCode': response.statusCode,
-        'data': decoded is Map<String, dynamic>
-            ? decoded
-            : <String, dynamic>{},
+        'data': decoded is Map<String, dynamic> ? decoded : <String, dynamic>{},
       };
     } finally {
       client.close(force: true);
@@ -111,12 +104,9 @@ class _MyExamPageState extends State<MyExamPage> {
     String endpoint,
     String token,
   ) async {
-    final uri = Uri.parse(endpoint).replace(
-      queryParameters: const {
-        'page': '1',
-        'per_page': '1000',
-      },
-    );
+    final uri = Uri.parse(
+      endpoint,
+    ).replace(queryParameters: const {'page': '1', 'per_page': '1000'});
 
     final result = await _getJsonWithToken(uri.toString(), token);
     final statusCode = result['statusCode'] as int;
@@ -124,8 +114,7 @@ class _MyExamPageState extends State<MyExamPage> {
 
     if (statusCode < 200 || statusCode >= 300) {
       throw Exception(
-        (body['message'] ?? body['error'] ?? 'Failed to load items')
-            .toString(),
+        (body['message'] ?? body['error'] ?? 'Failed to load items').toString(),
       );
     }
 
@@ -160,14 +149,22 @@ class _MyExamPageState extends State<MyExamPage> {
       }
 
       final results = await Future.wait<List<Map<String, dynamic>>>([
-        _fetchOneList('${AppConfig.baseUrl}/api/quizz/my', token)
-            .catchError((_) => <Map<String, dynamic>>[]),
-        _fetchOneList('${AppConfig.baseUrl}/api/bubble-games/my', token)
-            .catchError((_) => <Map<String, dynamic>>[]),
-        _fetchOneList('${AppConfig.baseUrl}/api/door-games/my', token)
-            .catchError((_) => <Map<String, dynamic>>[]),
-        _fetchOneList('${AppConfig.baseUrl}/api/path-games/my', token)
-            .catchError((_) => <Map<String, dynamic>>[]),
+        _fetchOneList(
+          '${AppConfig.baseUrl}/api/quizz/my',
+          token,
+        ).catchError((_) => <Map<String, dynamic>>[]),
+        _fetchOneList(
+          '${AppConfig.baseUrl}/api/bubble-games/my',
+          token,
+        ).catchError((_) => <Map<String, dynamic>>[]),
+        _fetchOneList(
+          '${AppConfig.baseUrl}/api/door-games/my',
+          token,
+        ).catchError((_) => <Map<String, dynamic>>[]),
+        _fetchOneList(
+          '${AppConfig.baseUrl}/api/path-games/my',
+          token,
+        ).catchError((_) => <Map<String, dynamic>>[]),
       ]);
 
       final merged = <MyExamItem>[
@@ -190,6 +187,8 @@ class _MyExamPageState extends State<MyExamPage> {
         _isLoading = false;
         _isRefreshing = false;
       });
+
+      _maybePromptContinueItem();
     } on TimeoutException {
       if (!mounted) return;
       setState(() {
@@ -216,19 +215,21 @@ class _MyExamPageState extends State<MyExamPage> {
       status: (raw['status'] ?? 'active').toString(),
       myStatus: (raw['my_status'] ?? raw['myStatus'] ?? 'pending').toString(),
       durationText: _toDurationText(raw),
-      assignedAt: (raw['assigned_at'] ??
-              raw['assignment_time'] ??
-              raw['assigned_on'] ??
-              raw['assignedAt'] ??
-              raw['created_at'])
-          ?.toString(),
+      assignedAt:
+          (raw['assigned_at'] ??
+                  raw['assignment_time'] ??
+                  raw['assigned_on'] ??
+                  raw['assignedAt'] ??
+                  raw['created_at'])
+              ?.toString(),
       createdAt: raw['created_at']?.toString(),
       raw: Map<String, dynamic>.from(raw),
     );
   }
 
   String _pickInstructions(Map<String, dynamic> raw) {
-    final value = raw['instructions_html'] ??
+    final value =
+        raw['instructions_html'] ??
         raw['instructions'] ??
         raw['excerpt'] ??
         raw['description'] ??
@@ -238,9 +239,8 @@ class _MyExamPageState extends State<MyExamPage> {
   }
 
   String _toDurationText(Map<String, dynamic> raw) {
-    final totalTime = raw['total_time'] ??
-        raw['total_time_minutes'] ??
-        raw['duration'];
+    final totalTime =
+        raw['total_time'] ?? raw['total_time_minutes'] ?? raw['duration'];
 
     if (totalTime != null && totalTime.toString().trim().isNotEmpty) {
       final n = int.tryParse(totalTime.toString());
@@ -325,7 +325,8 @@ class _MyExamPageState extends State<MyExamPage> {
 
   int _pickAllowedAttempts(MyExamItem item) {
     final raw = item.raw;
-    final value = raw['max_attempts_allowed'] ??
+    final value =
+        raw['max_attempts_allowed'] ??
         raw['max_attempts'] ??
         raw['max_attempt'] ??
         raw['total_attempts_allowed'] ??
@@ -404,7 +405,8 @@ class _MyExamPageState extends State<MyExamPage> {
     final apiMaxReached = _toBool(item.raw['max_attempt_reached']);
     final apiCanAttempt = _toBool(item.raw['can_attempt']);
 
-    final maxAttemptReached = myStatus != 'in_progress' &&
+    final maxAttemptReached =
+        myStatus != 'in_progress' &&
         (apiMaxReached == true ||
             apiCanAttempt == false ||
             remaining <= 0 ||
@@ -477,10 +479,7 @@ class _MyExamPageState extends State<MyExamPage> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(
-          content: Text(message),
-          behavior: SnackBarBehavior.floating,
-        ),
+        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
       );
   }
 
@@ -489,14 +488,8 @@ class _MyExamPageState extends State<MyExamPage> {
 
     final result = await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ExamPage(
-          quizKey: item.uuid.trim(),
-          isDark: widget.isDark,
-          onExamFinished: () {
-            if (!mounted) return;
-            Navigator.of(context).pop(true);
-          },
-        ),
+        builder: (_) =>
+            ExamPage(quizKey: item.uuid.trim(), isDark: widget.isDark),
       ),
     );
 
@@ -525,9 +518,7 @@ class _MyExamPageState extends State<MyExamPage> {
         return Container(
           decoration: BoxDecoration(
             color: bgColor,
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(28),
-            ),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
           ),
           child: SafeArea(
             top: false,
@@ -626,6 +617,273 @@ class _MyExamPageState extends State<MyExamPage> {
     );
   }
 
+  bool _canOpenItem(MyExamItem item) {
+    if (widget.onStartExam != null) return true;
+    return item.type == 'quiz';
+  }
+
+  MyExamItem? _findContinueItem() {
+    for (final item in _items) {
+      final myStatus = item.myStatus.toLowerCase();
+      final meta = _buildActionMeta(item);
+
+      if (myStatus == 'in_progress' && !meta.disabled && _canOpenItem(item)) {
+        return item;
+      }
+    }
+
+    return null;
+  }
+
+  void _maybePromptContinueItem() {
+    if (!mounted || _continueDialogVisible) return;
+
+    final item = _findContinueItem();
+    if (item == null) return;
+
+    _continueDialogVisible = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _continueDialogVisible = false;
+        return;
+      }
+
+      await _showContinueDialog(item);
+      _continueDialogVisible = false;
+    });
+  }
+
+  Future<void> _showContinueDialog(MyExamItem item) async {
+    final isDark = widget.isDark;
+    final meta = _buildActionMeta(item);
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        final bgColor = isDark ? _darkCard : Colors.white;
+        final textColor = isDark ? Colors.white : _deep;
+        final subtitleColor = isDark ? _darkMuted : _muted;
+        final borderColor = isDark ? Colors.white.withOpacity(0.06) : _line;
+
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 24,
+          ),
+          child: Container(
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: borderColor),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(isDark ? 0.34 : 0.10),
+                  blurRadius: 28,
+                  offset: const Offset(0, 14),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 52,
+                      height: 52,
+                      decoration: BoxDecoration(
+                        color: _primary.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Icon(
+                        Icons.history_rounded,
+                        color: _primary,
+                        size: 26,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Continue Running Exam',
+                            style: TextStyle(
+                              color: textColor,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'This exam is already running. Continue from where you left off.',
+                            style: TextStyle(
+                              color: subtitleColor,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                              height: 1.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 13,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? Colors.white.withOpacity(0.05)
+                        : const Color(0xFFFFF8FA),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: _primary.withOpacity(0.10),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.description_rounded,
+                          color: _primary,
+                          size: 18,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          item.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: textColor,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 13,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? Colors.white.withOpacity(0.05)
+                        : const Color(0xFFFFF8FA),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: _primary.withOpacity(0.10),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.play_circle_outline_rounded,
+                          color: _primary,
+                          size: 18,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Status: In progress',
+                          style: TextStyle(
+                            color: textColor,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () {
+                          Navigator.of(dialogContext).pop();
+                        },
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: textColor,
+                          side: BorderSide(color: borderColor),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        child: const Text(
+                          'Later',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: meta.disabled
+                            ? null
+                            : () {
+                                Navigator.of(dialogContext).pop();
+                                _handleStart(item);
+                              },
+                        icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                        label: const Text(
+                          'Continue',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _primary,
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor: _primary.withOpacity(0.4),
+                          disabledForegroundColor: Colors.white.withOpacity(
+                            0.65,
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _handleStart(MyExamItem item) async {
     final meta = _buildActionMeta(item);
 
@@ -654,9 +912,7 @@ class _MyExamPageState extends State<MyExamPage> {
         ? Colors.white.withOpacity(0.05)
         : const Color(0xFFF7ECEE);
 
-    final activeBg = isDark
-        ? Colors.white.withOpacity(0.12)
-        : Colors.white;
+    final activeBg = isDark ? Colors.white.withOpacity(0.12) : Colors.white;
 
     final textPrimary = isDark ? Colors.white : _deep;
     final textSecondary = isDark ? _darkMuted : _muted;
@@ -709,14 +965,16 @@ class _MyExamPageState extends State<MyExamPage> {
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: selected
                         ? _primary.withOpacity(0.12)
                         : (isDark
-                            ? Colors.white.withOpacity(0.08)
-                            : const Color(0xFFF3E6E8)),
+                              ? Colors.white.withOpacity(0.08)
+                              : const Color(0xFFF3E6E8)),
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
@@ -746,11 +1004,7 @@ class _MyExamPageState extends State<MyExamPage> {
       ),
       child: Row(
         children: [
-          tabButton(
-            index: 0,
-            title: 'Exams',
-            count: _allExamItems.length,
-          ),
+          tabButton(index: 0, title: 'Exams', count: _allExamItems.length),
           const SizedBox(width: 6),
           tabButton(
             index: 1,
@@ -765,7 +1019,9 @@ class _MyExamPageState extends State<MyExamPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = widget.isDark;
-    final items = _selectedTab == 0 ? _filteredExamItems : _filteredFinishedItems;
+    final items = _selectedTab == 0
+        ? _filteredExamItems
+        : _filteredFinishedItems;
 
     final bgColor = isDark ? _darkBg : _bg;
     final cardColor = isDark ? _darkCard : Colors.white;
@@ -790,11 +1046,7 @@ class _MyExamPageState extends State<MyExamPage> {
                 height: 245,
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [
-                      Color(0xFF7B2A30),
-                      _primary,
-                      _secondary,
-                    ],
+                    colors: [Color(0xFF7B2A30), _primary, _secondary],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -916,8 +1168,8 @@ class _MyExamPageState extends State<MyExamPage> {
                                         isDense: true,
                                         contentPadding:
                                             const EdgeInsets.symmetric(
-                                          vertical: 10,
-                                        ),
+                                              vertical: 10,
+                                            ),
                                       ),
                                     ),
                                   ),
@@ -933,8 +1185,9 @@ class _MyExamPageState extends State<MyExamPage> {
                                           color: isDark
                                               ? Colors.white.withOpacity(0.1)
                                               : const Color(0xFFF7ECEE),
-                                          borderRadius:
-                                              BorderRadius.circular(999),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
                                         ),
                                         child: const Icon(
                                           Icons.close_rounded,
@@ -1053,8 +1306,8 @@ class _MyExamPageState extends State<MyExamPage> {
                           Text(
                             _query.isEmpty
                                 ? (_selectedTab == 0
-                                    ? 'No active or pending exams are available right now.'
-                                    : 'No completed or finished exams are available right now.')
+                                      ? 'No active or pending exams are available right now.'
+                                      : 'No completed or finished exams are available right now.')
                                 : 'Try a different search term.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
@@ -1255,10 +1508,10 @@ class _ExamCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cardColor = isDark ? const Color(0xFF1C1C21) : Colors.white;
     final textPrimary = isDark ? Colors.white : _deep;
-    final textSecondary =
-        isDark ? Colors.white70 : const Color(0xFF7C8090);
-    final borderColor =
-        isDark ? Colors.white.withOpacity(0.05) : const Color(0xFFF1E4E6);
+    final textSecondary = isDark ? Colors.white70 : const Color(0xFF7C8090);
+    final borderColor = isDark
+        ? Colors.white.withOpacity(0.05)
+        : const Color(0xFFF1E4E6);
 
     final statusColor = _getStatusColor();
     final statusBgColor = _getStatusBgColor();
@@ -1359,8 +1612,8 @@ class _ExamCard extends StatelessWidget {
                               item.myStatus.toLowerCase() == 'completed'
                                   ? Icons.check_circle_outline
                                   : item.myStatus.toLowerCase() == 'in_progress'
-                                      ? Icons.play_circle_outline
-                                      : Icons.pending_outlined,
+                                  ? Icons.play_circle_outline
+                                  : Icons.pending_outlined,
                               size: 14,
                               color: statusColor,
                             ),
@@ -1549,9 +1802,7 @@ class _ExamCard extends StatelessWidget {
                                 SizedBox(width: 6),
                                 Text(
                                   'Instructions',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                                  style: TextStyle(fontWeight: FontWeight.w700),
                                 ),
                               ],
                             ),
@@ -1569,8 +1820,9 @@ class _ExamCard extends StatelessWidget {
                             backgroundColor: _primary,
                             disabledBackgroundColor: _primary.withOpacity(0.4),
                             foregroundColor: Colors.white,
-                            disabledForegroundColor:
-                                Colors.white.withOpacity(0.6),
+                            disabledForegroundColor: Colors.white.withOpacity(
+                              0.6,
+                            ),
                             elevation: 0,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14),
@@ -1620,8 +1872,9 @@ class _ExamLoadingState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cardColor = isDark ? const Color(0xFF1C1C21) : Colors.white;
-    final shimmerColor =
-        isDark ? Colors.white.withOpacity(0.05) : const Color(0xFFF3EAEC);
+    final shimmerColor = isDark
+        ? Colors.white.withOpacity(0.05)
+        : const Color(0xFFF3EAEC);
 
     return Column(
       children: List.generate(4, (index) {
@@ -1696,9 +1949,7 @@ class _ExamLoadingState extends StatelessWidget {
                     children: List.generate(2, (i) {
                       return Expanded(
                         child: Padding(
-                          padding: EdgeInsets.only(
-                            right: i == 0 ? 10 : 0,
-                          ),
+                          padding: EdgeInsets.only(right: i == 0 ? 10 : 0),
                           child: Container(
                             height: 46,
                             decoration: BoxDecoration(

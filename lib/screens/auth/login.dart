@@ -37,6 +37,7 @@ class _LoginPageState extends State<LoginPage> {
 
   bool _keepLoggedIn = false;
   bool _submitting = false;
+  bool _checkingSession = true;
   bool _showPassword = false;
 
   InlineNotice? _notice;
@@ -46,6 +47,9 @@ class _LoginPageState extends State<LoginPage> {
     super.initState();
     _identifierController.text = widget.initialIdentifier?.trim() ?? '';
     _passwordController.text = widget.initialPassword ?? '';
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tryAutoLoginFromStoredToken();
+    });
   }
 
   @override
@@ -66,6 +70,44 @@ class _LoginPageState extends State<LoginPage> {
       setState(() {
         _notice = null;
       });
+    }
+  }
+
+  Future<Map<String, dynamic>> _getJson(
+    String endpoint, {
+    String? token,
+  }) async {
+    final client = HttpClient();
+
+    try {
+      final request = await client.getUrl(Uri.parse(endpoint));
+      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      if ((token ?? '').trim().isNotEmpty) {
+        request.headers.set(
+          HttpHeaders.authorizationHeader,
+          'Bearer ${token!.trim()}',
+        );
+      }
+
+      final response = await request.close().timeout(
+        const Duration(seconds: 20),
+      );
+
+      final responseText = await response.transform(utf8.decoder).join();
+
+      dynamic decoded;
+      try {
+        decoded = responseText.isNotEmpty ? jsonDecode(responseText) : {};
+      } catch (_) {
+        decoded = {};
+      }
+
+      return {
+        'statusCode': response.statusCode,
+        'data': decoded is Map<String, dynamic> ? decoded : <String, dynamic>{},
+      };
+    } finally {
+      client.close(force: true);
     }
   }
 
@@ -96,9 +138,7 @@ class _LoginPageState extends State<LoginPage> {
 
       return {
         'statusCode': response.statusCode,
-        'data': decoded is Map<String, dynamic>
-            ? decoded
-            : <String, dynamic>{},
+        'data': decoded is Map<String, dynamic> ? decoded : <String, dynamic>{},
       };
     } finally {
       client.close(force: true);
@@ -141,6 +181,69 @@ class _LoginPageState extends State<LoginPage> {
     await prefs.setBool('keep_logged_in', _keepLoggedIn);
   }
 
+  Future<void> _clearStoredAuth() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('token');
+    await prefs.remove('role');
+    await prefs.remove('keep_logged_in');
+  }
+
+  Future<void> _tryAutoLoginFromStoredToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    final storedToken = (prefs.getString('token') ?? '').trim();
+
+    if (storedToken.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _checkingSession = false;
+      });
+      return;
+    }
+
+    try {
+      final result = await _getJson(
+        '${AppConfig.baseUrl}/api/auth/check',
+        token: storedToken,
+      );
+
+      final int statusCode = result['statusCode'] as int;
+      final Map<String, dynamic> data = result['data'] as Map<String, dynamic>;
+
+      if (statusCode >= 200 && statusCode < 300 && data['user'] is Map) {
+        if (!mounted) return;
+
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const StructurePage()),
+        );
+        return;
+      }
+
+      await _clearStoredAuth();
+      if (!mounted) return;
+      _setNotice(
+        _extractMessage(
+          data,
+          fallback: 'Your session expired. Please log in again.',
+        ),
+        NoticeType.error,
+      );
+    } on TimeoutException {
+      if (!mounted) return;
+      _setNotice(
+        'Could not verify your session right now. Please log in manually.',
+        NoticeType.warning,
+      );
+    } catch (_) {
+      if (!mounted) return;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _checkingSession = false;
+        });
+      }
+    }
+  }
+
   Future<void> _submitLogin() async {
     FocusScope.of(context).unfocus();
     _clearNotice();
@@ -152,25 +255,18 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      final result = await _postJson(
-        '${AppConfig.baseUrl}/api/auth/login',
-        {
-          'login': _identifierController.text.trim(),
-          'password': _passwordController.text,
-          'remember': _keepLoggedIn,
-        },
-      );
+      final result = await _postJson('${AppConfig.baseUrl}/api/auth/login', {
+        'login': _identifierController.text.trim(),
+        'password': _passwordController.text,
+        'remember': _keepLoggedIn,
+      });
 
       final int statusCode = result['statusCode'] as int;
-      final Map<String, dynamic> data =
-          result['data'] as Map<String, dynamic>;
+      final Map<String, dynamic> data = result['data'] as Map<String, dynamic>;
 
       if (statusCode == 422) {
         _setNotice(
-          _extractMessage(
-            data,
-            fallback: 'Please check your login details.',
-          ),
+          _extractMessage(data, fallback: 'Please check your login details.'),
           NoticeType.warning,
         );
         return;
@@ -184,15 +280,18 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
-      final String token =
-          (data['access_token'] ?? data['token'] ?? '').toString().trim();
+      final String token = (data['access_token'] ?? data['token'] ?? '')
+          .toString()
+          .trim();
 
       final Map<String, dynamic> userMap = data['user'] is Map
           ? Map<String, dynamic>.from(data['user'] as Map)
           : <String, dynamic>{};
 
-      final String role =
-          (userMap['role'] ?? 'student').toString().trim().toLowerCase();
+      final String role = (userMap['role'] ?? 'student')
+          .toString()
+          .trim()
+          .toLowerCase();
 
       if (token.isEmpty) {
         _setNotice('No token received from server.', NoticeType.error);
@@ -301,10 +400,7 @@ class _LoginPageState extends State<LoginPage> {
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
-                        colors: [
-                          AppColors.primary,
-                          AppColors.secondary,
-                        ],
+                        colors: [AppColors.primary, AppColors.secondary],
                       ),
                       borderRadius: BorderRadius.only(
                         bottomLeft: Radius.elliptical(220, 70),
@@ -392,11 +488,15 @@ class _LoginPageState extends State<LoginPage> {
                                         vertical: 11,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: _noticeBg(context, _notice!.type),
+                                        color: _noticeBg(
+                                          context,
+                                          _notice!.type,
+                                        ),
                                         borderRadius: BorderRadius.circular(10),
                                         border: Border.all(
-                                          color: _noticeBorder(_notice!.type)
-                                              .withOpacity(.30),
+                                          color: _noticeBorder(
+                                            _notice!.type,
+                                          ).withOpacity(.30),
                                         ),
                                       ),
                                       child: Row(
@@ -404,8 +504,9 @@ class _LoginPageState extends State<LoginPage> {
                                             CrossAxisAlignment.start,
                                         children: [
                                           Padding(
-                                            padding:
-                                                const EdgeInsets.only(top: 1.5),
+                                            padding: const EdgeInsets.only(
+                                              top: 1.5,
+                                            ),
                                             child: FaIcon(
                                               _noticeIcon(_notice!.type),
                                               size: 14,
@@ -522,7 +623,8 @@ class _LoginPageState extends State<LoginPage> {
                                   Align(
                                     alignment: Alignment.centerRight,
                                     child: TextButton(
-                                      onPressed: widget.onForgotPassword ??
+                                      onPressed:
+                                          widget.onForgotPassword ??
                                           _openForgotPasswordPage,
                                       style: TextButton.styleFrom(
                                         padding: const EdgeInsets.symmetric(
@@ -542,8 +644,19 @@ class _LoginPageState extends State<LoginPage> {
                                   ),
                                   const SizedBox(height: 6),
                                   ElevatedButton.icon(
-                                    onPressed: _submitting ? null : _submitLogin,
+                                    onPressed: (_submitting || _checkingSession)
+                                        ? null
+                                        : _submitLogin,
                                     icon: _submitting
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Colors.white,
+                                            ),
+                                          )
+                                        : _checkingSession
                                         ? const SizedBox(
                                             width: 16,
                                             height: 16,
@@ -558,14 +671,20 @@ class _LoginPageState extends State<LoginPage> {
                                             color: Colors.white,
                                           ),
                                     label: Text(
-                                      _submitting ? 'Signing in...' : 'Login',
+                                      _submitting
+                                          ? 'Signing in...'
+                                          : (_checkingSession
+                                                ? 'Checking session...'
+                                                : 'Login'),
                                     ),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: AppColors.primary,
                                       foregroundColor: Colors.white,
                                       minimumSize: const Size.fromHeight(44),
-                                      maximumSize:
-                                          const Size(double.infinity, 44),
+                                      maximumSize: const Size(
+                                        double.infinity,
+                                        44,
+                                      ),
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(8),
                                       ),
@@ -588,7 +707,8 @@ class _LoginPageState extends State<LoginPage> {
                                           ),
                                         ),
                                         GestureDetector(
-                                          onTap: widget.onOpenRegister ??
+                                          onTap:
+                                              widget.onOpenRegister ??
                                               _openRegisterPage,
                                           child: const Text(
                                             'Register',
@@ -643,10 +763,7 @@ class _LoginPageState extends State<LoginPage> {
               ],
             ),
             child: ClipOval(
-              child: Image.asset(
-                'assets/icons/logo.png',
-                fit: BoxFit.contain,
-              ),
+              child: Image.asset('assets/icons/logo.png', fit: BoxFit.contain),
             ),
           ),
           const SizedBox(height: 14),
@@ -691,9 +808,7 @@ class _LoginPageState extends State<LoginPage> {
         height: size,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          gradient: RadialGradient(
-            colors: [color, Colors.transparent],
-          ),
+          gradient: RadialGradient(colors: [color, Colors.transparent]),
         ),
       ),
     );
@@ -702,11 +817,7 @@ class _LoginPageState extends State<LoginPage> {
   Widget _label(String text, Color color) {
     return Text(
       text,
-      style: TextStyle(
-        color: color,
-        fontSize: 13,
-        fontWeight: FontWeight.w800,
-      ),
+      style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w800),
     );
   }
 
@@ -749,11 +860,7 @@ class _LoginPageState extends State<LoginPage> {
           width: 42,
           height: 42,
           child: Center(
-            child: FaIcon(
-              prefixIcon,
-              size: 15,
-              color: textSecondary,
-            ),
+            child: FaIcon(prefixIcon, size: 15, color: textSecondary),
           ),
         ),
         prefixIconConstraints: const BoxConstraints(
@@ -784,11 +891,9 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   void _openRegisterPage() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const RegisterPage(),
-      ),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const RegisterPage()));
   }
 }
 
@@ -798,8 +903,5 @@ class InlineNotice {
   final String message;
   final NoticeType type;
 
-  const InlineNotice({
-    required this.message,
-    required this.type,
-  });
+  const InlineNotice({required this.message, required this.type});
 }

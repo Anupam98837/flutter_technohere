@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
@@ -41,8 +43,10 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
   static const Color _violet = Color(0xFF6E49B8);
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  static const String _examClientStorageKey = 'exam_client_id';
 
   String _token = '';
+  String _examClientId = '';
   String? _attemptUuid;
   String? _serverEndAt;
 
@@ -113,12 +117,20 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
         state == AppLifecycleState.detached) {
       _leaveActiveQuestion();
       _cacheSave();
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed &&
+        _examStarted &&
+        !_isSubmitting &&
+        !_startingExam) {
+      unawaited(_refreshAttemptStatus());
     }
   }
 
   Future<void> _prepare() async {
     if (_isDisposed) return;
-    
+
     setState(() {
       _booting = true;
       _error = null;
@@ -126,6 +138,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
     try {
       _token = await _getToken();
+      _examClientId = await _getOrCreateExamClientId();
 
       if (widget.quizKey.trim().isEmpty) {
         throw Exception('Quiz key missing.');
@@ -157,10 +170,19 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
   Future<String> _getToken() async {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString('student_token') ??
-            prefs.getString('token') ??
-            '')
+    return (prefs.getString('student_token') ?? prefs.getString('token') ?? '')
         .trim();
+  }
+
+  Future<String> _getOrCreateExamClientId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(_examClientStorageKey)?.trim();
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final next =
+        'exam-${DateTime.now().millisecondsSinceEpoch}-${DateTime.now().microsecondsSinceEpoch % 1000000}';
+    await prefs.setString(_examClientStorageKey, next);
+    return next;
   }
 
   Future<Map<String, dynamic>> _api(
@@ -193,6 +215,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $_token');
+      if (_examClientId.trim().isNotEmpty) {
+        request.headers.set('X-Exam-Client-Id', _examClientId.trim());
+      }
 
       headers?.forEach((key, value) {
         request.headers.set(key, value);
@@ -203,8 +228,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
         request.write(jsonEncode(body));
       }
 
-      final response =
-          await request.close().timeout(Duration(seconds: timeoutSeconds));
+      final response = await request.close().timeout(
+        Duration(seconds: timeoutSeconds),
+      );
       final text = await response.transform(utf8.decoder).join();
 
       dynamic decoded;
@@ -221,10 +247,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
       if (response.statusCode < 200 ||
           response.statusCode >= 300 ||
           data['success'] == false) {
-        final message = (data['message'] ??
-                data['error'] ??
-                'HTTP ${response.statusCode}')
-            .toString();
+        final message =
+            (data['message'] ?? data['error'] ?? 'HTTP ${response.statusCode}')
+                .toString();
 
         throw ApiException(
           message: message,
@@ -353,8 +378,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                       const SizedBox(height: 14),
                       Row(
                         children: const [
-                          Icon(Icons.schedule_rounded,
-                              size: 16, color: _muted),
+                          Icon(Icons.schedule_rounded, size: 16, color: _muted),
                           SizedBox(width: 8),
                           Expanded(
                             child: Text(
@@ -387,8 +411,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(14),
                                 ),
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 14),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
                               ),
                             ),
                           ),
@@ -423,8 +448,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(14),
                                 ),
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 14),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
                               ),
                             ),
                           ),
@@ -483,6 +509,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
         } catch (e) {
           if (_isAttemptMissingError(e)) {
             await _clearAllExamClientState();
+          } else if (_isExamLockedError(e)) {
+            await _handleActiveExamLock(e);
+            return;
           }
         }
       }
@@ -493,7 +522,8 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
           method: 'POST',
         );
 
-        final attempt = response['attempt'] ??
+        final attempt =
+            response['attempt'] ??
             response['data']?['attempt'] ??
             response['data'] ??
             {};
@@ -562,14 +592,15 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
       setState(() {});
     } catch (e) {
       final message = e.toString().replaceFirst('Exception: ', '');
+      if (_isExamLockedError(e)) {
+        await _handleActiveExamLock(e);
+        return;
+      }
       if (!mounted || _isDisposed) return;
       setState(() {
         _error = message;
       });
-      await _showMessageDialog(
-        title: 'Cannot start exam',
-        message: message,
-      );
+      await _showMessageDialog(title: 'Cannot start exam', message: message);
       _goBack();
     } finally {
       if (!mounted || _isDisposed) return;
@@ -657,9 +688,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
         _selections
           ..clear()
           ..addAll(
-            selections.map(
-              (key, value) => MapEntry(key.toString(), value),
-            ),
+            selections.map((key, value) => MapEntry(key.toString(), value)),
           );
       }
 
@@ -691,10 +720,8 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
           ..clear()
           ..addAll(
             timeSpent.map(
-              (key, value) => MapEntry(
-                key.toString(),
-                int.tryParse(value.toString()) ?? 0,
-              ),
+              (key, value) =>
+                  MapEntry(key.toString(), int.tryParse(value.toString()) ?? 0),
             ),
           );
       }
@@ -729,7 +756,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
   Future<void> _cacheSave() async {
     if (_isDisposed) return;
-    
+
     final prefs = await SharedPreferences.getInstance();
 
     final payload = {
@@ -808,7 +835,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
     void tick() {
       if (_isDisposed) return;
-      
+
       final left = _computeTimeLeft();
       if (left != null && left <= 0 && !_autoSubmitFired) {
         _autoSubmitFired = true;
@@ -825,8 +852,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
   bool _isAttemptMissingError(Object error) {
     if (error is ApiException) {
       final msg = error.message.toLowerCase();
-      final payloadMsg =
-          (error.payload?['message'] ?? '').toString().toLowerCase();
+      final payloadMsg = (error.payload?['message'] ?? '')
+          .toString()
+          .toLowerCase();
 
       return (error.statusCode == 404 &&
               (msg.contains('attempt') || payloadMsg.contains('attempt'))) ||
@@ -836,6 +864,132 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
     final msg = error.toString().toLowerCase();
     return msg.contains('attempt not found');
+  }
+
+  bool _isAttemptClosedError(Object error) {
+    if (error is ApiException) {
+      final msg = error.message.toLowerCase();
+      final payloadMsg = (error.payload?['message'] ?? '')
+          .toString()
+          .toLowerCase();
+
+      return error.statusCode == 409 &&
+          (msg.contains('attempt is not running') ||
+              payloadMsg.contains('attempt is not running') ||
+              msg.contains('submitted') ||
+              payloadMsg.contains('submitted'));
+    }
+
+    final msg = error.toString().toLowerCase();
+    return msg.contains('attempt is not running') || msg.contains('submitted');
+  }
+
+  bool _isExamLockedError(Object error) {
+    return error is ApiException && error.statusCode == 423;
+  }
+
+  Future<void> _refreshAttemptStatus() async {
+    if (_isDisposed) return;
+
+    final attempt = (_attemptUuid ?? '').trim();
+    if (attempt.isEmpty) return;
+
+    try {
+      final response = await _api(
+        '/api/exam/attempts/${Uri.encodeComponent(attempt)}/questions',
+      );
+      final pack = response['data'] ?? response;
+
+      if (pack is Map<String, dynamic>) {
+        final attemptMap = pack['attempt'];
+        if (attemptMap is Map<String, dynamic>) {
+          final nextServerEndAt = _pickString(
+            attemptMap['server_end_at'],
+            attemptMap['serverEndAt'],
+          );
+
+          if (nextServerEndAt.isNotEmpty && nextServerEndAt != _serverEndAt) {
+            if (mounted && !_isDisposed) {
+              setState(() {
+                _serverEndAt = nextServerEndAt;
+              });
+            } else {
+              _serverEndAt = nextServerEndAt;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (_isExamLockedError(e)) {
+        await _handleActiveExamLock(e);
+        return;
+      }
+
+      if (_isAttemptClosedError(e) || _isAttemptMissingError(e)) {
+        await _handleClosedAttemptRedirect(
+          title: 'Exam Already Closed',
+          message:
+              'This exam is no longer active on this device. Please continue from the device where it is running.',
+        );
+      }
+    }
+  }
+
+  Future<void> _handleActiveExamLock(Object error) async {
+    if (!mounted || _isDisposed) return;
+
+    var message = 'Another exam is already running for this user.';
+    if (error is ApiException) {
+      final payloadMessage = (error.payload?['message'] ?? '')
+          .toString()
+          .trim();
+      if (payloadMessage.isNotEmpty) {
+        message = payloadMessage;
+      } else if (error.message.trim().isNotEmpty) {
+        message = error.message.trim();
+      }
+    }
+
+    await _clearAllExamClientState();
+    if (!mounted || _isDisposed) return;
+
+    await _showMessageDialog(title: 'Exam Restricted', message: message);
+
+    _redirectToExamHub();
+  }
+
+  Future<void> _handleClosedAttemptRedirect({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted || _isDisposed) return;
+
+    await _clearAllExamClientState();
+    if (!mounted || _isDisposed) return;
+
+    await _showMessageDialog(title: title, message: message);
+
+    _redirectToExamHub();
+  }
+
+  void _redirectToExamHub() {
+    if (_isDisposed || !mounted) return;
+
+    if (widget.onBackPressed != null) {
+      widget.onBackPressed!.call();
+      return;
+    }
+
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+      return;
+    }
+
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const StructurePage(initialIndex: 1)),
+      (route) => false,
+    );
   }
 
   void _enterQuestion(int questionId) {
@@ -971,10 +1125,10 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
   void _updateFibAnswer(int questionId, int index, String value) {
     if (_isDisposed) return;
-    
+
     final key = _qKey(questionId);
     final gaps = _countGaps(_currentQuestion);
-    
+
     List<String> current;
     final existing = _selections[key];
     if (existing is List) {
@@ -984,15 +1138,15 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
     } else {
       current = [];
     }
-    
+
     while (current.length < gaps) {
       current.add('');
     }
-    
+
     if (index < current.length) {
       current[index] = value;
     }
-    
+
     if (mounted && !_isDisposed) {
       setState(() {
         _selections[key] = current;
@@ -1058,6 +1212,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
           timeoutSeconds: 25,
         );
       } catch (e) {
+        if (_isExamLockedError(e) || _isAttemptClosedError(e)) rethrow;
         if (_isAttemptMissingError(e)) rethrow;
       }
 
@@ -1079,6 +1234,21 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
       _finishAndExit();
     } catch (e) {
+      if (_isExamLockedError(e)) {
+        await _handleActiveExamLock(e);
+        return;
+      }
+
+      if (_isAttemptClosedError(e)) {
+        await _handleClosedAttemptRedirect(
+          title: auto ? 'Exam Time Ended' : 'Exam Already Closed',
+          message: auto
+              ? 'Your exam time ended on another device, so this screen has been closed.'
+              : 'This attempt is no longer active on this device.',
+        );
+        return;
+      }
+
       if (_isAttemptMissingError(e)) {
         await _clearAllExamClientState();
         if (!mounted || _isDisposed) return;
@@ -1094,10 +1264,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
 
       final message = e.toString().replaceFirst('Exception: ', '');
       if (!mounted || _isDisposed) return;
-      await _showMessageDialog(
-        title: 'Submit Failed',
-        message: message,
-      );
+      await _showMessageDialog(title: 'Submit Failed', message: message);
     } finally {
       if (mounted && !_isDisposed) {
         setState(() {
@@ -1175,22 +1342,18 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
   }
 
   void _finishAndExit() {
-  if (_isDisposed || !mounted) return;
+    if (_isDisposed || !mounted) return;
 
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (!mounted || _isDisposed) return;
-
-    if (widget.onExamFinished != null) {
-      widget.onExamFinished!();
-    } else {
-      Navigator.of(context).maybePop(true);
-    }
-  });
-}
+    final navigator = Navigator.of(context);
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const StructurePage(initialIndex: 1)),
+      (route) => false,
+    );
+  }
 
   void _goBack() {
     if (_isDisposed) return;
-    
+
     if (widget.onBackPressed != null) {
       widget.onBackPressed!.call();
       return;
@@ -1293,9 +1456,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                           decoration: BoxDecoration(
                             color: const Color(0xFFFFF4E6),
                             borderRadius: BorderRadius.circular(999),
-                            border: Border.all(
-                              color: const Color(0xFFFFD99A),
-                            ),
+                            border: Border.all(color: const Color(0xFFFFD99A)),
                           ),
                           child: const Text(
                             'Review',
@@ -1348,7 +1509,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
     if (q.type == 'fill_in_the_blank') {
       final gaps = _countGaps(q);
       final key = _qKey(q.questionId);
-      
+
       List<String> currentValues;
       final existing = _selections[key];
       if (existing is List) {
@@ -1358,16 +1519,16 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
       } else {
         currentValues = [];
       }
-      
+
       while (currentValues.length < gaps) {
         currentValues.add('');
       }
-      
+
       final controllers = <TextEditingController>[];
       for (int i = 0; i < gaps; i++) {
         final controllerKey = '${q.questionId}_$i';
         TextEditingController controller;
-        
+
         if (_fibControllers.containsKey(controllerKey)) {
           controller = _fibControllers[controllerKey]!;
           if (controller.text != currentValues[i]) {
@@ -1457,10 +1618,10 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
         final key = _qKey(q.questionId);
         final checked = q.hasMultipleCorrectAnswer
             ? ((_selections[key] is List)
-                ? (_selections[key] as List)
-                    .map((e) => e.toString())
-                    .contains(answer.answerId.toString())
-                : false)
+                  ? (_selections[key] as List)
+                        .map((e) => e.toString())
+                        .contains(answer.answerId.toString())
+                  : false)
             : (_selections[key]?.toString() == answer.answerId.toString());
 
         return Padding(
@@ -1637,8 +1798,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                                 value: _progressPercent(),
                                 minHeight: 10,
                                 backgroundColor: const Color(0xFFF3E6E8),
-                                valueColor:
-                                    const AlwaysStoppedAnimation<Color>(_primary),
+                                valueColor: const AlwaysStoppedAnimation<Color>(
+                                  _primary,
+                                ),
                               ),
                             ),
                           ),
@@ -1666,18 +1828,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                         spacing: 10,
                         runSpacing: 10,
                         children: [
-                          _legendDot(
-                            color: _primary,
-                            text: 'Current',
-                          ),
-                          _legendDot(
-                            color: _success,
-                            text: 'Answered',
-                          ),
-                          _legendDot(
-                            color: _warn,
-                            text: 'Marked',
-                          ),
+                          _legendDot(color: _primary, text: 'Current'),
+                          _legendDot(color: _success, text: 'Answered'),
+                          _legendDot(color: _warn, text: 'Marked'),
                           _legendDot(
                             color: const Color(0xFFECEDEF),
                             text: 'Visited',
@@ -1697,11 +1850,11 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                     itemCount: _questions.length,
                     gridDelegate:
                         const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 5,
-                      mainAxisSpacing: 10,
-                      crossAxisSpacing: 10,
-                      childAspectRatio: 1,
-                    ),
+                          crossAxisCount: 5,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          childAspectRatio: 1,
+                        ),
                     itemBuilder: (context, index) {
                       final q = _questions[index];
                       final nav = _navStyle(index, q);
@@ -1726,7 +1879,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                                       color: nav.background.withOpacity(0.30),
                                       blurRadius: 14,
                                       offset: const Offset(0, 5),
-                                    )
+                                    ),
                                   ]
                                 : null,
                           ),
@@ -1762,9 +1915,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                             ),
                           )
                         : const Icon(Icons.send_rounded),
-                    label: Text(
-                      _isSubmitting ? 'Submitting…' : 'Submit Exam',
-                    ),
+                    label: Text(_isSubmitting ? 'Submitting…' : 'Submit Exam'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: _primary,
                       foregroundColor: Colors.white,
@@ -1878,8 +2029,9 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                   side: BorderSide(
                     color: reviewed ? const Color(0xFFFFD99A) : _line,
                   ),
-                  backgroundColor:
-                      reviewed ? const Color(0xFFFFF7EA) : Colors.white,
+                  backgroundColor: reviewed
+                      ? const Color(0xFFFFF7EA)
+                      : Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(15),
@@ -2055,10 +2207,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
         Container(
           width: 10,
           height: 10,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 6),
         Text(
@@ -2115,9 +2264,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
       decoration: BoxDecoration(
         color: background,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.10),
-        ),
+        border: Border.all(color: Colors.white.withOpacity(0.10)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -2164,11 +2311,7 @@ class _ExamPageState extends State<ExamPage> with WidgetsBindingObserver {
                 width: double.infinity,
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [
-                      Color(0xFF7B2A30),
-                      _primary,
-                      _secondary,
-                    ],
+                    colors: [Color(0xFF7B2A30), _primary, _secondary],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -2332,19 +2475,19 @@ class HtmlMathView extends StatelessWidget {
     final trimmed = url.trim();
     if (trimmed.isEmpty) return trimmed;
 
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    if (trimmed.startsWith('data:image/')) {
       return trimmed;
     }
 
-    if (trimmed.startsWith('//')) {
-      return 'https:$trimmed';
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return Uri.parse(trimmed).toString();
     }
 
-    final cleanBase = baseUrl.replaceAll(RegExp(r'/$'), '');
-    if (trimmed.startsWith('/')) {
-      return '$cleanBase$trimmed';
+    if (trimmed.startsWith('//')) {
+      return Uri.parse('https:$trimmed').toString();
     }
-    return '$cleanBase/$trimmed';
+
+    return Uri.parse(baseUrl).resolve(trimmed).toString();
   }
 
   String _normalizeAssetUrls(String raw) {
@@ -2358,10 +2501,39 @@ class HtmlMathView extends StatelessWidget {
     );
   }
 
+  String _pickImageSource(
+    dynamic src,
+    dynamic dataSrc,
+    dynamic dataLazySrc, [
+    dynamic srcSet,
+  ]) {
+    for (final candidate in [src, dataSrc, dataLazySrc]) {
+      final value = candidate?.toString().trim() ?? '';
+      if (value.isNotEmpty) return value;
+    }
+
+    final srcSetValue = srcSet?.toString().trim() ?? '';
+    if (srcSetValue.isEmpty) return '';
+
+    final firstEntry = srcSetValue.split(',').first.trim();
+    if (firstEntry.isEmpty) return '';
+    return firstEntry.split(RegExp(r'\s+')).first.trim();
+  }
+
+  double? _parseDimension(String? raw) {
+    final text = raw?.trim() ?? '';
+    if (text.isEmpty) return null;
+
+    final match = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(text);
+    if (match == null) return null;
+    return double.tryParse(match.group(1)!);
+  }
+
   String _replaceDashes(String raw) {
     return raw.replaceAllMapped(
       RegExp(r'\{dash\}', caseSensitive: false),
-      (_) => '<span style="display:inline-block; min-width:80px; border-bottom:2px solid #cbd5e1; margin:0 4px;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>',
+      (_) =>
+          '<span style="display:inline-block; min-width:80px; border-bottom:2px solid #cbd5e1; margin:0 4px;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>',
     );
   }
 
@@ -2420,7 +2592,8 @@ class HtmlMathView extends StatelessWidget {
     processed = _normalizeAssetUrls(processed);
     processed = _replaceDashes(processed);
     processed = _decorateMathTags(processed);
-    processed = '<div style="margin:0; padding:0; line-height:1.6;">$processed</div>';
+    processed =
+        '<div style="margin:0; padding:0; line-height:1.6;">$processed</div>';
     return processed;
   }
 
@@ -2430,15 +2603,14 @@ class HtmlMathView extends StatelessWidget {
 
     return HtmlWidget(
       processed,
-      textStyle: textStyle ??
-          const TextStyle(
-            color: Color(0xFF2A0F10),
-            fontSize: 14,
-            height: 1.6,
-          ),
+      textStyle:
+          textStyle ??
+          const TextStyle(color: Color(0xFF2A0F10), fontSize: 14, height: 1.6),
       customWidgetBuilder: (element) {
         if (element.localName == 'math-inline') {
-          final latex = Uri.decodeComponent(element.attributes['data-latex'] ?? '');
+          final latex = Uri.decodeComponent(
+            element.attributes['data-latex'] ?? '',
+          );
           if (latex.trim().isEmpty) return const SizedBox.shrink();
 
           return LayoutBuilder(
@@ -2451,10 +2623,7 @@ class HtmlMathView extends StatelessWidget {
                   textStyle: textStyle,
                   onErrorFallback: (error) {
                     debugPrint('Math inline error: $error for latex: $latex');
-                    return Text(
-                      latex,
-                      style: textStyle,
-                    );
+                    return Text(latex, style: textStyle);
                   },
                 ),
               );
@@ -2463,7 +2632,9 @@ class HtmlMathView extends StatelessWidget {
         }
 
         if (element.localName == 'math-block') {
-          final latex = Uri.decodeComponent(element.attributes['data-latex'] ?? '');
+          final latex = Uri.decodeComponent(
+            element.attributes['data-latex'] ?? '',
+          );
           if (latex.trim().isEmpty) return const SizedBox.shrink();
 
           return Padding(
@@ -2478,10 +2649,7 @@ class HtmlMathView extends StatelessWidget {
                     textStyle: textStyle,
                     onErrorFallback: (error) {
                       debugPrint('Math block error: $error for latex: $latex');
-                      return Text(
-                        latex,
-                        style: textStyle,
-                      );
+                      return Text(latex, style: textStyle);
                     },
                   ),
                 );
@@ -2491,55 +2659,50 @@ class HtmlMathView extends StatelessWidget {
         }
 
         if (element.localName == 'img') {
-          final src = element.attributes['src'] ?? '';
-          final resolved = _resolveUrl(src);
+          final source = _pickImageSource(
+            element.attributes['src'],
+            element.attributes['data-src'],
+            element.attributes['data-lazy-src'],
+            element.attributes['srcset'],
+          );
+          final resolved = _resolveUrl(source);
+          final declaredWidth = _parseDimension(element.attributes['width']);
+          final declaredHeight = _parseDimension(element.attributes['height']);
 
           if (resolved.trim().isEmpty) return const SizedBox.shrink();
 
           return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
+            padding: const EdgeInsets.only(top: 6, bottom: 6, right: 8),
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final maxWidth = constraints.maxWidth.isFinite
+                final availableWidth = constraints.maxWidth.isFinite
                     ? constraints.maxWidth
                     : MediaQuery.of(context).size.width - 32;
+                final displayWidth = math.max(
+                  96.0,
+                  math.min(
+                    availableWidth,
+                    declaredWidth == null || declaredWidth <= 0
+                        ? availableWidth
+                        : declaredWidth,
+                  ),
+                );
+                final displayHeight = math.max(
+                  84.0,
+                  math.min(
+                    declaredHeight == null || declaredHeight <= 0
+                        ? 220.0
+                        : declaredHeight,
+                    260.0,
+                  ),
+                );
 
-                return ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
-                  child: Container(
-                    width: maxWidth,
-                    color: const Color(0xFFF8F3F4),
-                    child: Image.network(
-                      resolved,
-                      fit: BoxFit.contain,
-                      loadingBuilder: (context, child, progress) {
-                        if (progress == null) return child;
-                        return Container(
-                          width: maxWidth,
-                          padding: const EdgeInsets.symmetric(vertical: 24),
-                          alignment: Alignment.center,
-                          child: const CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: _ExamPageState._primary,
-                          ),
-                        );
-                      },
-                      errorBuilder: (context, error, stackTrace) {
-                        return Container(
-                          width: maxWidth,
-                          padding: const EdgeInsets.all(14),
-                          alignment: Alignment.center,
-                          child: const Text(
-                            'Image could not be loaded',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: _ExamPageState._muted,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+                return Align(
+                  alignment: Alignment.centerLeft,
+                  child: _HtmlImageView(
+                    source: resolved,
+                    maxWidth: displayWidth,
+                    maxHeight: displayHeight,
                   ),
                 );
               },
@@ -2549,6 +2712,113 @@ class HtmlMathView extends StatelessWidget {
 
         return null;
       },
+    );
+  }
+}
+
+class _HtmlImageView extends StatelessWidget {
+  final String source;
+  final double maxWidth;
+  final double maxHeight;
+
+  const _HtmlImageView({
+    required this.source,
+    required this.maxWidth,
+    required this.maxHeight,
+  });
+
+  Uint8List? _decodeDataUri(String value) {
+    if (!value.startsWith('data:image/')) return null;
+
+    try {
+      return UriData.parse(value).contentAsBytes();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Widget _loadingShell() {
+    return Container(
+      constraints: BoxConstraints(
+        maxWidth: maxWidth,
+        minWidth: math.min(maxWidth, 96.0),
+        minHeight: math.min(maxHeight, 84.0),
+        maxHeight: maxHeight,
+      ),
+      color: const Color(0xFFF8F3F4),
+      alignment: Alignment.center,
+      child: const Padding(
+        padding: EdgeInsets.all(16),
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: _ExamPageState._primary,
+        ),
+      ),
+    );
+  }
+
+  Widget _errorShell() {
+    return Container(
+      constraints: BoxConstraints(
+        maxWidth: maxWidth,
+        minWidth: math.min(maxWidth, 96.0),
+        minHeight: math.min(maxHeight, 84.0),
+        maxHeight: maxHeight,
+      ),
+      padding: const EdgeInsets.all(12),
+      color: const Color(0xFFF8F3F4),
+      alignment: Alignment.center,
+      child: const Text(
+        'Image could not be loaded',
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: _ExamPageState._muted,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pixelRatio = MediaQuery.of(context).devicePixelRatio;
+    final cacheWidth = (maxWidth * pixelRatio).round();
+    final bytes = _decodeDataUri(source);
+
+    final image = bytes != null
+        ? Image.memory(
+            bytes,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.medium,
+            gaplessPlayback: true,
+            cacheWidth: cacheWidth > 0 ? cacheWidth : null,
+            errorBuilder: (_, __, ___) => _errorShell(),
+          )
+        : Image.network(
+            source,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.medium,
+            gaplessPlayback: true,
+            cacheWidth: cacheWidth > 0 ? cacheWidth : null,
+            loadingBuilder: (context, child, progress) {
+              if (progress == null) return child;
+              return _loadingShell();
+            },
+            errorBuilder: (_, __, ___) => _errorShell(),
+          );
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: maxWidth,
+          minWidth: math.min(maxWidth, 96.0),
+          minHeight: math.min(maxHeight, 84.0),
+          maxHeight: maxHeight,
+        ),
+        color: const Color(0xFFF8F3F4),
+        child: image,
+      ),
     );
   }
 }
@@ -2582,20 +2852,20 @@ class ExamQuestion {
           .trim()
           .toLowerCase(),
       titleHtml: (map['question_title'] ?? map['title'] ?? '').toString(),
-      descriptionHtml:
-          (map['question_description'] ?? map['description'] ?? '').toString(),
+      descriptionHtml: (map['question_description'] ?? map['description'] ?? '')
+          .toString(),
       questionMark:
           int.tryParse((map['question_mark'] ?? map['mark'] ?? 1).toString()) ??
-              1,
+          1,
       hasMultipleCorrectAnswer:
           map['has_multiple_correct_answer'] == true ||
-              map['has_multiple_correct_answer'] == 1 ||
-              map['multiple'] == true,
+          map['has_multiple_correct_answer'] == 1 ||
+          map['multiple'] == true,
       answers: rawAnswers is List
           ? rawAnswers
-              .whereType<Map>()
-              .map((e) => ExamAnswer.fromMap(Map<String, dynamic>.from(e)))
-              .toList()
+                .whereType<Map>()
+                .map((e) => ExamAnswer.fromMap(Map<String, dynamic>.from(e)))
+                .toList()
           : const [],
     );
   }
@@ -2617,10 +2887,7 @@ class ExamAnswer {
   final int answerId;
   final String answerTitle;
 
-  const ExamAnswer({
-    required this.answerId,
-    required this.answerTitle,
-  });
+  const ExamAnswer({required this.answerId, required this.answerTitle});
 
   factory ExamAnswer.fromMap(Map<String, dynamic> map) {
     return ExamAnswer(
@@ -2631,10 +2898,7 @@ class ExamAnswer {
   }
 
   Map<String, dynamic> toMap() {
-    return {
-      'answer_id': answerId,
-      'answer_title': answerTitle,
-    };
+    return {'answer_id': answerId, 'answer_title': answerTitle};
   }
 }
 
@@ -2683,11 +2947,7 @@ class ApiException implements Exception {
   final int? statusCode;
   final Map<String, dynamic>? payload;
 
-  ApiException({
-    required this.message,
-    this.statusCode,
-    this.payload,
-  });
+  ApiException({required this.message, this.statusCode, this.payload});
 
   @override
   String toString() => message;

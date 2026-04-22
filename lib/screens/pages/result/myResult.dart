@@ -11,16 +11,14 @@ import 'package:url_launcher/url_launcher.dart';
 class MyResultPage extends StatefulWidget {
   final bool isDark;
 
-  const MyResultPage({
-    super.key,
-    required this.isDark,
-  });
+  const MyResultPage({super.key, required this.isDark});
 
   @override
   State<MyResultPage> createState() => _MyResultPageState();
 }
 
-class _MyResultPageState extends State<MyResultPage> {
+class _MyResultPageState extends State<MyResultPage>
+    with WidgetsBindingObserver {
   static const Color _primary = Color(0xFF9E363A);
   static const Color _secondary = Color(0xFFC94B50);
   static const Color _deep = Color(0xFF2A0F10);
@@ -34,7 +32,9 @@ class _MyResultPageState extends State<MyResultPage> {
   static const Color _darkLine = Color(0xFF2C2C33);
 
   static const String _fixedType = 'quizz';
-  static const List<int> _perPageOptions = [10, 20, 30, 50, 100];
+  static const String _notSeenStatus = 'not_seen';
+  static const String _seenStatus = 'seen';
+  static const String _localSeenStorageKey = 'my_result_local_seen_items';
 
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -45,31 +45,43 @@ class _MyResultPageState extends State<MyResultPage> {
   String? _error;
 
   List<MyResultItem> _items = [];
+  String _seenFilter = _notSeenStatus;
 
   int _page = 1;
-  int _perPage = 10;
-  int _serverPerPage = 10;
+  int _perPage = 20;
   int _total = 0;
   int _totalPages = 1;
   bool _hasMore = false;
   bool _hasKnownTotalPages = false;
 
   Map<String, dynamic>? _emailStatusCache;
+  Map<String, MyResultItem> _localSeenItems = {};
+  bool _localSeenLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _searchController.addListener(_onSearchChanged);
     _loadItems();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _searchDebounce?.cancel();
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
+    if (state == AppLifecycleState.resumed) {
+      _loadItems(refreshing: true);
+    }
   }
 
   String get _query => _searchController.text.trim();
@@ -98,10 +110,44 @@ class _MyResultPageState extends State<MyResultPage> {
 
   Future<String> _getToken() async {
     final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString('student_token') ??
-            prefs.getString('token') ??
-            '')
+    return (prefs.getString('student_token') ?? prefs.getString('token') ?? '')
         .trim();
+  }
+
+  Future<void> _ensureLocalSeenLoaded() async {
+    if (_localSeenLoaded) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_localSeenStorageKey);
+
+    if (raw == null || raw.trim().isEmpty) {
+      _localSeenLoaded = true;
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        _localSeenItems = decoded.map((key, value) {
+          final itemMap = value is Map<String, dynamic>
+              ? value
+              : <String, dynamic>{};
+          return MapEntry(key, MyResultItem.fromMap(itemMap));
+        });
+      }
+    } catch (_) {
+      _localSeenItems = {};
+    }
+
+    _localSeenLoaded = true;
+  }
+
+  Future<void> _persistLocalSeenItems() async {
+    final prefs = await SharedPreferences.getInstance();
+    final payload = _localSeenItems.map(
+      (key, value) => MapEntry(key, value.toMap()),
+    );
+    await prefs.setString(_localSeenStorageKey, jsonEncode(payload));
   }
 
   int? _asInt(dynamic value) {
@@ -115,6 +161,70 @@ class _MyResultPageState extends State<MyResultPage> {
     if (value is bool) return value;
     final raw = value?.toString().trim().toLowerCase();
     return raw == 'true' || raw == '1' || raw == 'yes';
+  }
+
+  DateTime _submittedAtOrEpoch(MyResultItem item) {
+    return _parseAnyDate(item.submittedAt) ??
+        DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  List<MyResultItem> _applySeenOverrides(List<MyResultItem> serverItems) {
+    final seenIds = _localSeenItems.keys.toSet();
+
+    if (_seenFilter == _notSeenStatus) {
+      return serverItems
+          .where((item) => !seenIds.contains(item.resultUuid.trim()))
+          .toList();
+    }
+
+    final merged = <String, MyResultItem>{};
+
+    for (final item in _localSeenItems.values) {
+      final key = item.resultUuid.trim();
+      if (key.isNotEmpty) {
+        merged[key] = item;
+      }
+    }
+
+    for (final item in serverItems) {
+      final key = item.resultUuid.trim();
+      if (key.isNotEmpty) {
+        merged[key] = item;
+      }
+    }
+
+    final items = merged.values.toList()
+      ..sort(
+        (a, b) => _submittedAtOrEpoch(b).compareTo(_submittedAtOrEpoch(a)),
+      );
+    return items;
+  }
+
+  Future<void> _markResultSeen(MyResultItem item) async {
+    await _ensureLocalSeenLoaded();
+
+    final key = item.resultUuid.trim();
+    if (key.isEmpty) return;
+
+    _localSeenItems[key] = item;
+    await _persistLocalSeenItems();
+
+    if (!mounted) return;
+
+    setState(() {
+      if (_seenFilter == _notSeenStatus) {
+        _items.removeWhere((entry) => entry.resultUuid.trim() == key);
+      } else {
+        final exists = _items.any((entry) => entry.resultUuid.trim() == key);
+        if (!exists) {
+          _items = [item, ..._items]
+            ..sort(
+              (a, b) =>
+                  _submittedAtOrEpoch(b).compareTo(_submittedAtOrEpoch(a)),
+            );
+        }
+      }
+    });
   }
 
   Future<Map<String, dynamic>> _getJsonWithToken(
@@ -143,9 +253,7 @@ class _MyResultPageState extends State<MyResultPage> {
 
       return {
         'statusCode': response.statusCode,
-        'data': decoded is Map<String, dynamic>
-            ? decoded
-            : <String, dynamic>{},
+        'data': decoded is Map<String, dynamic> ? decoded : <String, dynamic>{},
       };
     } finally {
       client.close(force: true);
@@ -181,9 +289,7 @@ class _MyResultPageState extends State<MyResultPage> {
 
       return {
         'statusCode': response.statusCode,
-        'data': decoded is Map<String, dynamic>
-            ? decoded
-            : <String, dynamic>{},
+        'data': decoded is Map<String, dynamic> ? decoded : <String, dynamic>{},
       };
     } finally {
       client.close(force: true);
@@ -202,20 +308,22 @@ class _MyResultPageState extends State<MyResultPage> {
 
     try {
       final token = await _getToken();
+      await _ensureLocalSeenLoaded();
 
       if (token.isEmpty) {
         throw Exception('Login session not found. Please log in again.');
       }
 
-      final uri =
-          Uri.parse('${AppConfig.baseUrl}/api/student-results/my').replace(
-        queryParameters: {
-          'page': '$_page',
-          'per_page': '$_perPage',
-          'type': _fixedType,
-          if (_query.isNotEmpty) 'q': _query,
-        },
-      );
+      final uri = Uri.parse('${AppConfig.baseUrl}/api/student-results/my')
+          .replace(
+            queryParameters: {
+              'page': '$_page',
+              'per_page': '$_perPage',
+              'type': _fixedType,
+              'seen_status': _seenFilter,
+              if (_query.isNotEmpty) 'q': _query,
+            },
+          );
 
       final result = await _getJsonWithToken(uri.toString(), token);
       final statusCode = result['statusCode'] as int;
@@ -235,12 +343,14 @@ class _MyResultPageState extends State<MyResultPage> {
 
       final items = rawData is List
           ? rawData
-              .whereType<Map>()
-              .map((e) => MyResultItem.fromMap(Map<String, dynamic>.from(e)))
-              .toList()
+                .whereType<Map>()
+                .map((e) => MyResultItem.fromMap(Map<String, dynamic>.from(e)))
+                .toList()
           : <MyResultItem>[];
+      final displayItems = _applySeenOverrides(items);
 
-      final currentPage = _asInt(
+      final currentPage =
+          _asInt(
             pagination['page'] ??
                 pagination['current_page'] ??
                 pagination['currentPage'],
@@ -253,7 +363,8 @@ class _MyResultPageState extends State<MyResultPage> {
             pagination['totalCount'],
       );
 
-      final serverPerPage = _asInt(
+      final serverPerPage =
+          _asInt(
             pagination['per_page'] ??
                 pagination['perPage'] ??
                 pagination['limit'],
@@ -266,13 +377,10 @@ class _MyResultPageState extends State<MyResultPage> {
             pagination['lastPage'],
       );
 
-      final rawHasMore = _asBool(
-            pagination['has_more'] ?? pagination['hasMore'],
-          ) ||
-          false;
+      final rawHasMore =
+          _asBool(pagination['has_more'] ?? pagination['hasMore']) || false;
 
-      final hasKnownTotalPages =
-          explicitTotalPages != null || total != null;
+      final hasKnownTotalPages = explicitTotalPages != null || total != null;
 
       int resolvedTotalPages;
       if (explicitTotalPages != null && explicitTotalPages > 0) {
@@ -290,10 +398,11 @@ class _MyResultPageState extends State<MyResultPage> {
       if (!mounted) return;
 
       setState(() {
-        _items = items;
+        _items = displayItems;
         _page = math.max(1, currentPage);
-        _total = total ?? items.length;
-        _serverPerPage = serverPerPage;
+        _total = _seenFilter == _seenStatus
+            ? math.max(total ?? displayItems.length, displayItems.length)
+            : (total ?? displayItems.length);
         _totalPages = math.max(1, resolvedTotalPages);
         _hasMore = canGoNext;
         _hasKnownTotalPages = hasKnownTotalPages;
@@ -374,10 +483,7 @@ class _MyResultPageState extends State<MyResultPage> {
     final result = await _postJsonWithToken(
       '${AppConfig.baseUrl}/api/student-results/verify-email-otp',
       token,
-      body: {
-        'email': email,
-        'otp': otp,
-      },
+      body: {'email': email, 'otp': otp},
     );
 
     final statusCode = result['statusCode'] as int;
@@ -434,7 +540,8 @@ class _MyResultPageState extends State<MyResultPage> {
 
       if (!mounted) return false;
 
-      final verified = await showDialog<bool>(
+      final verified =
+          await showDialog<bool>(
             context: context,
             barrierDismissible: true,
             builder: (context) {
@@ -482,8 +589,7 @@ class _MyResultPageState extends State<MyResultPage> {
     }
 
     if (uri == null ||
-        !(uri.hasScheme &&
-            (uri.scheme == 'http' || uri.scheme == 'https'))) {
+        !(uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https'))) {
       _showSnack('Invalid result URL.');
       return;
     }
@@ -506,7 +612,10 @@ class _MyResultPageState extends State<MyResultPage> {
 
     if (!opened) {
       _showSnack('Could not open result.');
+      return;
     }
+
+    await _markResultSeen(item);
   }
 
   void _goToPage(int targetPage) {
@@ -639,6 +748,14 @@ class _MyResultPageState extends State<MyResultPage> {
   }
 
   List<dynamic> _buildPagerItems() {
+    if (_items.isEmpty) return [];
+
+    if (_hasKnownTotalPages) {
+      if (_totalPages <= 1) return [];
+    } else {
+      if (_page <= 1 && !_hasMore) return [];
+    }
+
     if (!_hasKnownTotalPages) {
       return ['prev', 'next'];
     }
@@ -672,10 +789,10 @@ class _MyResultPageState extends State<MyResultPage> {
     return items;
   }
 
-  void _changePerPage(int value) {
-    if (value == _perPage) return;
+  void _changeSeenFilter(String nextValue) {
+    if (nextValue == _seenFilter) return;
     setState(() {
-      _perPage = value;
+      _seenFilter = nextValue;
       _page = 1;
     });
     _loadItems();
@@ -691,14 +808,10 @@ class _MyResultPageState extends State<MyResultPage> {
     return SliverToBoxAdapter(
       child: Container(
         width: double.infinity,
-        height: 220,
+        height: 290,
         decoration: const BoxDecoration(
           gradient: LinearGradient(
-            colors: [
-              Color(0xFF7B2A30),
-              _primary,
-              _secondary,
-            ],
+            colors: [Color(0xFF7B2A30), _primary, _secondary],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -854,6 +967,11 @@ class _MyResultPageState extends State<MyResultPage> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 14),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: _buildSeenTabs(isDark, inHeader: true),
+                  ),
                 ],
               ),
             ),
@@ -863,74 +981,96 @@ class _MyResultPageState extends State<MyResultPage> {
     );
   }
 
-  Widget _buildToolbar(bool isDark) {
+  Widget _buildSeenTabs(bool isDark, {bool inHeader = false}) {
     final cardColor = isDark ? _darkCard : Colors.white;
     final borderColor = isDark ? _darkLine : _line;
-    final textPrimary = isDark ? Colors.white : _deep;
-    final textSecondary = isDark ? _darkMuted : _muted;
+    final activeColor = _primary;
+    final inactiveText = isDark ? Colors.white : _deep;
+
+    Widget tabButton({
+      required String value,
+      required String label,
+      required IconData icon,
+    }) {
+      final selected = _seenFilter == value;
+
+      return Expanded(
+        child: InkWell(
+          onTap: _isLoading ? null : () => _changeSeenFilter(value),
+          borderRadius: BorderRadius.circular(14),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            decoration: BoxDecoration(
+              color: selected ? activeColor : Colors.transparent,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: selected ? activeColor : borderColor),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: _primary.withOpacity(inHeader ? 0.12 : 0.16),
+                        blurRadius: 14,
+                        offset: const Offset(0, 6),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  icon,
+                  size: 17,
+                  color: selected ? Colors.white : inactiveText,
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    label,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: selected ? Colors.white : inactiveText,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
         color: cardColor,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: borderColor),
+        boxShadow: inHeader
+            ? [
+                BoxShadow(
+                  color: _primary.withOpacity(0.08),
+                  blurRadius: 18,
+                  offset: const Offset(0, 6),
+                ),
+              ]
+            : null,
       ),
       child: Row(
         children: [
-          Text(
-            'Per page',
-            style: TextStyle(
-              color: textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-            ),
+          tabButton(
+            value: _notSeenStatus,
+            label: 'Not Seen',
+            icon: Icons.visibility_off_rounded,
           ),
-          const SizedBox(width: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              border: Border.all(color: borderColor),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<int>(
-                value: _perPageOptions.contains(_perPage) ? _perPage : 10,
-                dropdownColor: cardColor,
-                style: TextStyle(
-                  color: textPrimary,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 14,
-                ),
-                icon: const Icon(Icons.keyboard_arrow_down_rounded),
-                items: _perPageOptions
-                    .map(
-                      (value) => DropdownMenuItem<int>(
-                        value: value,
-                        child: Text('$value'),
-                      ),
-                    )
-                    .toList(),
-                onChanged: _isLoading
-                    ? null
-                    : (value) {
-                        if (value != null) {
-                          _changePerPage(value);
-                        }
-                      },
-              ),
-            ),
-          ),
-          const Spacer(),
-          Text(
-            _hasKnownTotalPages
-                ? '$_total result(s)'
-                : '${_items.length} loaded',
-            style: TextStyle(
-              color: textSecondary,
-              fontSize: 12.5,
-              fontWeight: FontWeight.w700,
-            ),
+          const SizedBox(width: 8),
+          tabButton(
+            value: _seenStatus,
+            label: 'Seen',
+            icon: Icons.visibility_rounded,
           ),
         ],
       ),
@@ -938,6 +1078,8 @@ class _MyResultPageState extends State<MyResultPage> {
   }
 
   Widget _buildFooter(bool isDark) {
+    if (_items.isEmpty) return const SizedBox.shrink();
+
     final textSecondary = isDark ? _darkMuted : _muted;
     final cardColor = isDark ? _darkCard : Colors.white;
     final borderColor = isDark ? _darkLine : _line;
@@ -946,8 +1088,8 @@ class _MyResultPageState extends State<MyResultPage> {
     final metaText = _hasKnownTotalPages
         ? 'Showing page $_page of $_totalPages — $_total result(s)'
         : (_hasMore
-            ? 'Showing page $_page (more available)'
-            : 'Showing page $_page');
+              ? 'Showing page $_page (more available)'
+              : 'Showing page $_page');
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -1002,8 +1144,9 @@ class _MyResultPageState extends State<MyResultPage> {
                   }
 
                   if (item == 'next') {
-                    final disabled =
-                        _hasKnownTotalPages ? _page >= _totalPages : !_hasMore;
+                    final disabled = _hasKnownTotalPages
+                        ? _page >= _totalPages
+                        : !_hasMore;
                     return _PagerButton(
                       label: 'Next',
                       active: false,
@@ -1055,8 +1198,6 @@ class _MyResultPageState extends State<MyResultPage> {
               padding: const EdgeInsets.fromLTRB(16, 18, 16, 26),
               sliver: SliverList(
                 delegate: SliverChildListDelegate([
-                  _buildToolbar(isDark),
-                  const SizedBox(height: 12),
                   if (_isLoading)
                     _ResultLoadingState(isDark: isDark)
                   else if (_error != null && items.isEmpty)
@@ -1134,7 +1275,9 @@ class _MyResultPageState extends State<MyResultPage> {
                           ),
                           const SizedBox(height: 14),
                           Text(
-                            'No results found',
+                            _seenFilter == _notSeenStatus
+                                ? 'No unseen results'
+                                : 'No seen results',
                             style: TextStyle(
                               color: textPrimary,
                               fontWeight: FontWeight.w800,
@@ -1144,7 +1287,9 @@ class _MyResultPageState extends State<MyResultPage> {
                           const SizedBox(height: 6),
                           Text(
                             _query.isEmpty
-                                ? 'No published results are available right now.'
+                                ? (_seenFilter == _notSeenStatus
+                                      ? 'No published unseen results are available right now.'
+                                      : 'No seen results are available right now.')
                                 : 'Try a different search term.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
@@ -1189,7 +1334,7 @@ class _MyResultPageState extends State<MyResultPage> {
                         ),
                       );
                     }),
-                  if (!_isLoading) ...[
+                  if (!_isLoading && items.isNotEmpty) ...[
                     const SizedBox(height: 2),
                     _buildFooter(isDark),
                   ],
@@ -1207,10 +1352,7 @@ class _MyResultPageState extends State<MyResultPage> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(
-          content: Text(message),
-          behavior: SnackBarBehavior.floating,
-        ),
+        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
       );
   }
 }
@@ -1249,10 +1391,14 @@ class MyResultItem {
       resultUuid: (result['uuid'] ?? '').toString(),
       attemptNo: int.tryParse((result['attempt_no'] ?? 0).toString()) ?? 0,
       score: double.tryParse((result['score'] ?? 0).toString()) ?? 0,
-      submittedAt:
-          (result['result_created_at'] ?? result['created_at'])?.toString(),
+      submittedAt: (result['result_created_at'] ?? result['created_at'])
+          ?.toString(),
       raw: Map<String, dynamic>.from(map),
     );
+  }
+
+  Map<String, dynamic> toMap() {
+    return Map<String, dynamic>.from(raw);
   }
 }
 
@@ -1282,10 +1428,10 @@ class _ResultCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cardColor = isDark ? const Color(0xFF1C1C21) : Colors.white;
     final textPrimary = isDark ? Colors.white : _deep;
-    final textSecondary =
-        isDark ? Colors.white70 : const Color(0xFF7C8090);
-    final borderColor =
-        isDark ? Colors.white.withOpacity(0.05) : const Color(0xFFF1E4E6);
+    final textSecondary = isDark ? Colors.white70 : const Color(0xFF7C8090);
+    final borderColor = isDark
+        ? Colors.white.withOpacity(0.05)
+        : const Color(0xFFF1E4E6);
 
     return Container(
       decoration: BoxDecoration(
@@ -1329,11 +1475,7 @@ class _ResultCard extends StatelessWidget {
                         color: moduleColor.withOpacity(0.14),
                         shape: BoxShape.circle,
                       ),
-                      child: Icon(
-                        moduleIcon,
-                        color: moduleColor,
-                        size: 24,
-                      ),
+                      child: Icon(moduleIcon, color: moduleColor, size: 24),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -1431,17 +1573,13 @@ class _ResultCard extends StatelessWidget {
                       backgroundColor: _primary,
                       disabledBackgroundColor: _primary.withOpacity(0.4),
                       foregroundColor: Colors.white,
-                      disabledForegroundColor:
-                          Colors.white.withOpacity(0.6),
+                      disabledForegroundColor: Colors.white.withOpacity(0.6),
                       elevation: 0,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),
                       ),
                     ),
-                    icon: const Icon(
-                      Icons.open_in_new_rounded,
-                      size: 18,
-                    ),
+                    icon: const Icon(Icons.open_in_new_rounded, size: 18),
                     label: const Text(
                       'View Result',
                       style: TextStyle(
@@ -1488,11 +1626,7 @@ class _InfoRow extends StatelessWidget {
             color: iconColor.withOpacity(0.10),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Icon(
-            icon,
-            size: 14,
-            color: iconColor,
-          ),
+          child: Icon(icon, size: 14, color: iconColor),
         ),
         const SizedBox(width: 10),
         Expanded(
@@ -1572,8 +1706,9 @@ class _ResultLoadingState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cardColor = isDark ? const Color(0xFF1C1C21) : Colors.white;
-    final shimmerColor =
-        isDark ? Colors.white.withOpacity(0.05) : const Color(0xFFF3EAEC);
+    final shimmerColor = isDark
+        ? Colors.white.withOpacity(0.05)
+        : const Color(0xFFF3EAEC);
 
     return Column(
       children: List.generate(4, (index) {
@@ -1897,10 +2032,12 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
     final isDark = widget.isDark;
     final bg = isDark ? const Color(0xFF1C1C21) : Colors.white;
     final textPrimary = isDark ? Colors.white : _deep;
-    final textSecondary =
-        isDark ? const Color(0xFF9A9EAD) : const Color(0xFF7C8090);
-    final borderColor =
-        isDark ? const Color(0xFF2C2C33) : const Color(0xFFF1E4E6);
+    final textSecondary = isDark
+        ? const Color(0xFF9A9EAD)
+        : const Color(0xFF7C8090);
+    final borderColor = isDark
+        ? const Color(0xFF2C2C33)
+        : const Color(0xFFF1E4E6);
     final fieldBg = isDark
         ? Colors.white.withOpacity(0.04)
         : const Color(0xFFFFFAFB);
@@ -1989,10 +2126,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                   ),
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(false),
-                    icon: Icon(
-                      Icons.close_rounded,
-                      color: textSecondary,
-                    ),
+                    icon: Icon(Icons.close_rounded, color: textSecondary),
                   ),
                 ],
               ),
@@ -2061,9 +2195,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                               )
                             : const Text(
                                 'Send OTP',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                ),
+                                style: TextStyle(fontWeight: FontWeight.w700),
                               ),
                       ),
                     ),
@@ -2141,10 +2273,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                               ),
                             ),
                           )
-                        : const Icon(
-                            Icons.key_rounded,
-                            color: _primary,
-                          ),
+                        : const Icon(Icons.key_rounded, color: _primary),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -2173,15 +2302,18 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                     ),
                     const SizedBox(width: 6),
                     TextButton(
-                      onPressed:
-                          (_countdown > 0 || _sendingOtp) ? null : _sendOtp,
+                      onPressed: (_countdown > 0 || _sendingOtp)
+                          ? null
+                          : _sendOtp,
                       style: TextButton.styleFrom(
                         padding: EdgeInsets.zero,
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       child: Text(
-                        _countdown > 0 ? 'Resend in ${_countdown}s' : 'Resend OTP',
+                        _countdown > 0
+                            ? 'Resend in ${_countdown}s'
+                            : 'Resend OTP',
                         style: const TextStyle(
                           color: _primary,
                           fontSize: 12.8,
@@ -2204,9 +2336,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                   decoration: BoxDecoration(
                     color: _success.withOpacity(0.10),
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: _success.withOpacity(0.28),
-                    ),
+                    border: Border.all(color: _success.withOpacity(0.28)),
                   ),
                   child: const Row(
                     children: [
@@ -2238,9 +2368,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                           onPressed: _sendingLink ? null : _sendResultLink,
                           style: OutlinedButton.styleFrom(
                             foregroundColor: _primary,
-                            side: BorderSide(
-                              color: _primary.withOpacity(0.28),
-                            ),
+                            side: BorderSide(color: _primary.withOpacity(0.28)),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14),
                             ),
@@ -2257,9 +2385,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                               : const Icon(Icons.link_rounded, size: 18),
                           label: const Text(
                             'Send Link',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                            ),
+                            style: TextStyle(fontWeight: FontWeight.w700),
                           ),
                         ),
                       ),
@@ -2278,12 +2404,13 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                               borderRadius: BorderRadius.circular(14),
                             ),
                           ),
-                          icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                          icon: const Icon(
+                            Icons.arrow_forward_rounded,
+                            size: 18,
+                          ),
                           label: const Text(
                             'Continue',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                            ),
+                            style: TextStyle(fontWeight: FontWeight.w700),
                           ),
                         ),
                       ),
@@ -2303,9 +2430,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                   decoration: BoxDecoration(
                     color: _primary.withOpacity(0.08),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: _primary.withOpacity(0.16),
-                    ),
+                    border: Border.all(color: _primary.withOpacity(0.16)),
                   ),
                   child: Text(
                     _successText!,
@@ -2327,9 +2452,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
 class _GateErrorText extends StatelessWidget {
   final String text;
 
-  const _GateErrorText({
-    required this.text,
-  });
+  const _GateErrorText({required this.text});
 
   @override
   Widget build(BuildContext context) {
