@@ -1903,6 +1903,27 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
     return RegExp(r'^\S+@\S+\.\S+$').hasMatch(value.trim());
   }
 
+  bool get _otpCooldownActive => _countdown > 0;
+
+  bool get _otpRequestLocked =>
+      _sendingOtp || _verifyingOtp || _otpCooldownActive;
+
+  String get _otpPrimaryButtonLabel {
+    if (_otpCooldownActive) {
+      return _otpStepVisible
+          ? 'Resend in ${_countdown}s'
+          : 'Wait ${_countdown}s';
+    }
+    return _otpStepVisible ? 'Resend OTP' : 'Send OTP';
+  }
+
+  String get _otpResendButtonLabel {
+    if (_otpCooldownActive) {
+      return 'Resend OTP in ${_countdown}s';
+    }
+    return 'Resend OTP';
+  }
+
   Future<void> _sendOtp() async {
     final email = _emailController.text.trim();
 
@@ -2174,7 +2195,7 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                     SizedBox(
                       height: 52,
                       child: ElevatedButton(
-                        onPressed: _sendingOtp ? null : _sendOtp,
+                        onPressed: _otpRequestLocked ? null : _sendOtp,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _primary,
                           foregroundColor: Colors.white,
@@ -2193,8 +2214,8 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                                   color: Colors.white,
                                 ),
                               )
-                            : const Text(
-                                'Send OTP',
+                            : Text(
+                                _otpPrimaryButtonLabel,
                                 style: TextStyle(fontWeight: FontWeight.w700),
                               ),
                       ),
@@ -2301,23 +2322,54 @@ class _ResultEmailGateDialogState extends State<_ResultEmailGateDialog> {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    TextButton(
-                      onPressed: (_countdown > 0 || _sendingOtp)
-                          ? null
-                          : _sendOtp,
-                      style: TextButton.styleFrom(
-                        padding: EdgeInsets.zero,
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: Text(
-                        _countdown > 0
-                            ? 'Resend in ${_countdown}s'
-                            : 'Resend OTP',
-                        style: const TextStyle(
-                          color: _primary,
-                          fontSize: 12.8,
-                          fontWeight: FontWeight.w700,
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          onPressed: _otpRequestLocked ? null : _sendOtp,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: _primary,
+                            disabledForegroundColor: textSecondary,
+                            side: BorderSide(
+                              color: _otpCooldownActive
+                                  ? borderColor
+                                  : _primary.withOpacity(0.24),
+                            ),
+                            backgroundColor: _otpCooldownActive
+                                ? fieldBg
+                                : Colors.transparent,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                            minimumSize: const Size(0, 40),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          icon: _sendingOtp
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: _primary,
+                                  ),
+                                )
+                              : Icon(
+                                  _otpCooldownActive
+                                      ? Icons.timer_outlined
+                                      : Icons.refresh_rounded,
+                                  size: 16,
+                                ),
+                          label: Text(
+                            _otpResendButtonLabel,
+                            style: const TextStyle(
+                              fontSize: 12.8,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
                       ),
                     ),
